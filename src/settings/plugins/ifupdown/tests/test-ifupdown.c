@@ -903,6 +903,32 @@ test19_read_static_ipv4_plen (const char *path)
 	g_object_unref (connection);
 }
 
+static void
+test20_source_stanza (const char *path)
+{
+	Expected *e;
+	ExpectedBlock *b;
+
+	e = expected_new ();
+
+	b = expected_block_new ("auto", "eth0");
+	expected_add_block (e, b);
+	b = expected_block_new ("iface", "eth0");
+	expected_add_block (e, b);
+	expected_block_add_key (b, expected_key_new ("inet", "dhcp"));
+
+	b = expected_block_new ("auto", "eth1");
+	expected_add_block (e, b);
+	b = expected_block_new ("iface", "eth1");
+	expected_add_block (e, b);
+	expected_block_add_key (b, expected_key_new ("inet", "dhcp"));
+
+	init_ifparser_with_file (path, "test20-source-stanza");
+	compare_expected_to_ifparser (e);
+
+	ifparser_destroy ();
+	expected_free (e);
+}
 
 #if GLIB_CHECK_VERSION(2,25,12)
 typedef GTestFixtureFunc TCFunc;
@@ -947,6 +973,7 @@ int main (int argc, char **argv)
 	g_test_suite_add (suite, TESTCASE (test17_read_static_ipv4, TEST_ENI_DIR));
 	g_test_suite_add (suite, TESTCASE (test18_read_static_ipv6, TEST_ENI_DIR));
 	g_test_suite_add (suite, TESTCASE (test19_read_static_ipv4_plen, TEST_ENI_DIR));
+	g_test_suite_add (suite, TESTCASE (test20_source_stanza, TEST_ENI_DIR));
 
 	return g_test_run ();
 }

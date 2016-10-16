@@ -68,6 +68,8 @@
 #define NM_DBUS_INTERFACE_SECRET_AGENT    NM_DBUS_INTERFACE ".SecretAgent"
 #define NM_DBUS_PATH_SECRET_AGENT         "/org/freedesktop/NetworkManager/SecretAgent"
 
+#define NM_CONNECTIVITY_DEFAULT_INTERVAL	300
+
 /**
  * NMState:
  * @NM_STATE_UNKNOWN: networking state is unknown
@@ -180,6 +182,7 @@ typedef enum {
  * @NM_WIFI_DEVICE_CAP_RSN: device supports WPA2/RSN authentication
  * @NM_WIFI_DEVICE_CAP_AP: device supports Access Point mode
  * @NM_WIFI_DEVICE_CAP_ADHOC: device supports Ad-Hoc mode
+ * @NM_WIFI_DEVICE_CAP_IBSS_RSN: device supports WPA2/RSN in an IBSS network.
  *
  * 802.11 specific device encryption and authentication capabilities.
  **/
@@ -192,7 +195,8 @@ typedef enum {
 	NM_WIFI_DEVICE_CAP_WPA           = 0x00000010,
 	NM_WIFI_DEVICE_CAP_RSN           = 0x00000020,
 	NM_WIFI_DEVICE_CAP_AP            = 0x00000040,
-	NM_WIFI_DEVICE_CAP_ADHOC         = 0x00000080
+	NM_WIFI_DEVICE_CAP_ADHOC         = 0x00000080,
+	NM_WIFI_DEVICE_CAP_IBSS_RSN      = 0x00000100
 } NMDeviceWifiCapabilities;
 
 
@@ -307,6 +311,7 @@ typedef enum {
 	NM_DEVICE_MODEM_CAPABILITY_CDMA_EVDO = 0x00000002,
 	NM_DEVICE_MODEM_CAPABILITY_GSM_UMTS  = 0x00000004,
 	NM_DEVICE_MODEM_CAPABILITY_LTE       = 0x00000008,
+	NM_DEVICE_MODEM_CAPABILITY_OFONO     = 0x00000010,
 } NMDeviceModemCapabilities;
 
 

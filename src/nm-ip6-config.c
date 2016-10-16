@@ -495,6 +495,11 @@ static int ip6_addr_to_rtnl_peer (const struct in6_addr *ip6_address, struct rtn
 
 	peer = nm_utils_ip6_addr_to_nl_addr (ip6_address, 0);
 	err = rtnl_addr_set_peer (addr, peer);
+
+	/* IPv6 doesn't support peer addresses yet, ignore the NOSUPPORT error */
+	if (err == -NLE_AF_NOSUPPORT)
+		err = 0;
+
 	nl_addr_put (peer);
 
 	return err;

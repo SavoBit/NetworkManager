@@ -679,14 +679,14 @@ update_dns (NMDnsManager *self,
 	 * still use the domain information in each config to provide split DNS if
 	 * they want to.
 	 */
-	if (priv->ip4_vpn_config)
-		vpn_configs = g_slist_append (vpn_configs, priv->ip4_vpn_config);
 	if (priv->ip6_vpn_config)
 		vpn_configs = g_slist_append (vpn_configs, priv->ip6_vpn_config);
-	if (priv->ip4_device_config)
-		dev_configs = g_slist_append (dev_configs, priv->ip4_device_config);
+	if (priv->ip4_vpn_config)
+		vpn_configs = g_slist_append (vpn_configs, priv->ip4_vpn_config);
 	if (priv->ip6_device_config)
 		dev_configs = g_slist_append (dev_configs, priv->ip6_device_config);
+	if (priv->ip4_device_config)
+		dev_configs = g_slist_append (dev_configs, priv->ip4_device_config);
 
 	for (iter = priv->configs; iter; iter = g_slist_next (iter)) {
 		if (   (iter->data != priv->ip4_vpn_config)
@@ -728,7 +728,7 @@ update_dns (NMDnsManager *self,
 	g_slist_free (dev_configs);
 	g_slist_free (other_configs);
 
-	/* If caching was successful, we only send 127.0.0.1 to /etc/resolv.conf
+	/* If caching was successful, we only send 127.0.1.1 to /etc/resolv.conf
 	 * to ensure that the glibc resolver doesn't try to round-robin nameservers,
 	 * but only uses the local caching nameserver.
 	 */
@@ -736,7 +736,7 @@ update_dns (NMDnsManager *self,
 		if (nameservers)
 			g_strfreev (nameservers);
 		nameservers = g_new0 (char*, 2);
-		nameservers[0] = g_strdup ("127.0.0.1");
+		nameservers[0] = g_strdup ("127.0.1.1");
 	}
 
 #ifdef RESOLVCONF_PATH
@@ -765,6 +765,27 @@ update_dns (NMDnsManager *self,
 		g_strfreev (nis_servers);
 
 	return success;
+}
+
+static void
+plugin_appeared (NMDnsPlugin *plugin, gpointer user_data)
+{
+	NMDnsManager *self = NM_DNS_MANAGER (user_data);
+	NMDnsManagerPrivate *priv = NM_DNS_MANAGER_GET_PRIVATE (self);
+	GError *error = NULL;
+
+	/* Not applicable to non-caching plugins */
+	if (!nm_dns_plugin_is_caching (plugin))
+		return;
+
+	/* Try to update DNS again; since it's now available on the bus this
+	 * might work. */
+	if (!update_dns (self, FALSE, &error)) {
+		nm_log_warn (LOGD_DNS, "could not commit DNS changes: (%d) %s",
+		             error ? error->code : -1,
+		             error && error->message ? error->message : "(unknown)");
+		g_clear_error (&error);
+	}
 }
 
 static void
@@ -1064,6 +1085,9 @@ load_plugins (NMDnsManager *self, const char **plugins)
 
 			nm_log_info (LOGD_DNS, "DNS: loaded plugin %s", nm_dns_plugin_get_name (plugin));
 			priv->plugins = g_slist_append (priv->plugins, plugin);
+			g_signal_connect (plugin, NM_DNS_PLUGIN_APPEARED,
+			                  G_CALLBACK (plugin_appeared),
+			                  self);
 			g_signal_connect (plugin, NM_DNS_PLUGIN_FAILED,
 			                  G_CALLBACK (plugin_failed),
 			                  self);
@@ -1122,7 +1146,7 @@ dispose (GObject *object)
 		priv->plugins = NULL;
 
 		/* If we're quitting leave a valid resolv.conf in place, not one
-		 * pointing to 127.0.0.1 if any plugins were active.  Thus update
+		 * pointing to 127.0.1.1 if any plugins were active.  Thus update
 		 * DNS after disposing of all plugins.  But if we haven't done any
 		 * DNS updates yet, there's no reason to touch resolv.conf on shutdown.
 		 */

@@ -1171,7 +1171,7 @@ nm_setting_ip6_config_class_init (NMSettingIP6ConfigClass *setting_class)
 		                   "2: enabled (prefer temporary addresses).",
 		                   NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN,
 		                   NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR,
-		                   NM_SETTING_IP6_CONFIG_PRIVACY_UNKNOWN,
+		                   NM_SETTING_IP6_CONFIG_PRIVACY_PREFER_TEMP_ADDR,
 		                   G_PARAM_READWRITE | G_PARAM_CONSTRUCT | NM_SETTING_PARAM_SERIALIZE));
 
 }

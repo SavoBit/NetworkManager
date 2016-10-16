@@ -684,14 +684,16 @@ static gboolean
 ip_string_to_network_address (const gchar *str,
                               guint32 *out)
 {
-	struct in_addr addr;
+	guint32 addr = 0;
+	gboolean success = FALSE;
 
-	/* IP address */
-	if (inet_pton (AF_INET, str, &addr) <= 0)
-		return FALSE;
+	if (!str || inet_pton (AF_INET, str, &addr) != 1)
+		addr = 0;
+	else
+		success = TRUE;
 
-	*out = (guint32)addr.s_addr;
-	return TRUE;
+	*out = (guint32)addr;
+	return success;
 }
 
 static gboolean
@@ -700,7 +702,9 @@ static_stage3_done (NMModemBroadband *self)
 	GError *error = NULL;
 	NMIP4Config *config = NULL;
 	const gchar *address_string;
+	const gchar *gw_string;
 	guint32 address_network;
+	guint32 gw;
 	NMIP4Address *addr;
 	const gchar **dns;
 	guint i;
@@ -722,17 +726,25 @@ static_stage3_done (NMModemBroadband *self)
 		goto out;
 	}
 
+	/* Missing gateway not a hard failure */
+	gw_string = mm_bearer_ip_config_get_gateway (self->priv->ipv4_config);
+	ip_string_to_network_address (gw_string, &gw);
+
 	config = nm_ip4_config_new ();
 	addr = nm_ip4_address_new ();
 	nm_ip4_address_set_address (addr, address_network);
 	prefix = mm_bearer_ip_config_get_prefix (self->priv->ipv4_config);
 	if (prefix > 0)
 		nm_ip4_address_set_prefix (addr, prefix);
-	nm_ip4_config_take_address (config, addr);
 
-	nm_log_info (LOGD_MB, "  address %s/%d",
-	             mm_bearer_ip_config_get_address (self->priv->ipv4_config),
-	             mm_bearer_ip_config_get_prefix (self->priv->ipv4_config));
+	nm_log_info (LOGD_MB, "  address %s/%d", address_string, prefix);
+
+	if (gw) {
+		nm_ip4_address_set_gateway (addr, gw);
+		nm_log_info (LOGD_MB, "  gateway %s", gw_string);
+	}
+
+	nm_ip4_config_take_address (config, addr);
 
 	/* DNS servers */
 	dns = mm_bearer_ip_config_get_dns (self->priv->ipv4_config);

@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wordexp.h>
+#include <libgen.h>
 #include "nm-utils.h"
 
 if_block* first;
@@ -96,21 +98,33 @@ static char *join_values_with_spaces(char *dst, char **src)
 	return(dst);
 }
 
-void ifparser_init (const char *eni_file, int quiet)
+static void _ifparser_source (const char *path, const char *en_dir, int quiet);
+
+static void
+_recursive_ifparser (const char *eni_file, int quiet)
 {
-	FILE *inp = fopen (eni_file, "r");
+	FILE *inp;
 	char line[255];
 	int skip_to_block = 1;
 	int skip_long_line = 0;
 	int offs = 0;
 
+	// Check if interfaces file exists and open it
+	if (!g_file_test (eni_file, G_FILE_TEST_EXISTS)) {
+		if (!quiet)
+			g_warning ("Warning: interfaces file %s doesn't exist\n", eni_file);
+		return;
+	}
+	inp = fopen (eni_file, "r");
 	if (inp == NULL) {
 		if (!quiet)
 			g_warning ("Error: Can't open %s\n", eni_file);
 		return;
 	}
+	if (!quiet)
+		g_message ("      interface-parser: parsing file %s\n", eni_file);
 
-	first = last = NULL;
+
 	while (!feof(inp))
 	{
 		char *token[128];	// 255 chars can only be split into 127 tokens
@@ -175,8 +189,9 @@ void ifparser_init (const char *eni_file, int quiet)
 			continue;
 		}
 
-		// There are four different stanzas:
-		// iface, mapping, auto and allow-*. Create a block for each of them.
+		// There are five different stanzas:
+		// iface, mapping, auto, allow-* and source.
+		// Create a block for each of them except source.
 
 		// iface stanza takes at least 3 parameters
 		if (strcmp(token[0], "iface") == 0) {
@@ -211,17 +226,71 @@ void ifparser_init (const char *eni_file, int quiet)
 				add_block(token[0], token[i]);
 			skip_to_block = 0;
 		}
+		// source stanza takes one or more filepaths as parameters
+		else if (strcmp(token[0], "source") == 0) {
+			int i;
+			char *en_dir;
+
+			skip_to_block = 0;
+
+			if (toknum == 1) {
+				if (!quiet)
+					g_warning ("Error: Invalid source line without parameters\n");
+				continue;
+			}
+
+			en_dir = g_path_get_dirname (eni_file);
+			for (i = 1; i < toknum; ++i)
+				_ifparser_source (token[i], en_dir, quiet);
+			g_free (en_dir);
+		}
 		else {
 			if (skip_to_block) {
 				if (!quiet) {
 					g_message ("Error: ignoring out-of-block data '%s'\n",
-							join_values_with_spaces(value, token));
+					           join_values_with_spaces(value, token));
 				}
 			} else
 				add_data(token[0], join_values_with_spaces(value, token + 1));
 		}
 	}
 	fclose(inp);
+
+	if (!quiet)
+		g_message ("      interface-parser: finished parsing file %s\n", eni_file);
+}
+
+static void
+_ifparser_source (const char *path, const char *en_dir, int quiet)
+{
+	char *abs_path;
+	wordexp_t we;
+	uint i;
+
+	if (g_path_is_absolute (path))
+		abs_path = g_strdup (path);
+	else
+		abs_path = g_build_filename (en_dir, path, NULL);
+
+	if (!quiet)
+		g_message ("      interface-parser: source line includes interfaces file(s) %s\n", abs_path);
+
+	/* ifupdown uses WRDE_NOCMD for wordexp. */
+	if (wordexp (abs_path, &we, WRDE_NOCMD)) {
+		if (!quiet)
+			g_warning ("Error: word expansion for %s failed\n", abs_path);
+	} else {
+		for (i = 0; i < we.we_wordc; i++)
+			_recursive_ifparser (we.we_wordv[i], quiet);
+		wordfree (&we);
+	}
+	g_free (abs_path);
+}
+
+void ifparser_init (const char *eni_file, int quiet)
+{
+	first = last = NULL;
+	_recursive_ifparser (eni_file, quiet);
 }
 
 void _destroy_data(if_data *ifd)

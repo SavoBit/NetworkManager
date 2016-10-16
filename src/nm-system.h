@@ -114,7 +114,8 @@ enum {
 		NM_IFACE_TYPE_BOND,
 		NM_IFACE_TYPE_VLAN,
 		NM_IFACE_TYPE_BRIDGE,
-		NM_IFACE_TYPE_DUMMY
+		NM_IFACE_TYPE_DUMMY,
+		NM_IFACE_TYPE_VETH
 };
 
 int             nm_system_get_iface_type      (int ifindex, const char *name);

@@ -688,6 +688,10 @@ nm_device_get_priority (NMDevice *dev)
 	 *     it's using that connection.
 	 */
 
+	/* Ubuntu change:
+	 * Adjust priorities to de-prioritize bluetooth, wimax and modem
+	 * to lower; BT is just slow, WiMAX and "MODEM" because they cost
+	 * money. */
 	switch (nm_device_get_device_type (dev)) {
 	case NM_DEVICE_TYPE_ETHERNET:
 		return 1;
@@ -695,20 +699,20 @@ nm_device_get_priority (NMDevice *dev)
 		return 2;
 	case NM_DEVICE_TYPE_ADSL:
 		return 3;
-	case NM_DEVICE_TYPE_WIMAX:
-		return 4;
 	case NM_DEVICE_TYPE_BOND:
 		return 5;
 	case NM_DEVICE_TYPE_VLAN:
 		return 6;
-	case NM_DEVICE_TYPE_MODEM:
-		return 7;
-	case NM_DEVICE_TYPE_BT:
-		return 8;
 	case NM_DEVICE_TYPE_WIFI:
 		return 9;
 	case NM_DEVICE_TYPE_OLPC_MESH:
 		return 10;
+	case NM_DEVICE_TYPE_BT:
+		return 11;
+	case NM_DEVICE_TYPE_WIMAX:
+		return 12;
+	case NM_DEVICE_TYPE_MODEM:
+		return 13;
 	default:
 		return 20;
 	}
@@ -2695,6 +2699,12 @@ addrconf6_cleanup (NMDevice *self)
 
 /******************************************/
 
+static const char *sysctl_conf_paths[] = {
+	"/etc/sysctl.d/10-ipv6-privacy.conf",
+	"/etc/sysctl.conf",
+	NULL
+};
+
 /* Get net.ipv6.conf.default.use_tempaddr value from /etc/sysctl.conf or
  * /lib/sysctl.d/sysctl.conf
  */
@@ -2704,24 +2714,30 @@ ip6_use_tempaddr (void)
 	char *contents = NULL;
 	gsize len = 0;
 	const char *group_name = "[forged_group]\n";
-	char *sysctl_data = NULL;
+	const char **sysctl_conf_path;
+	GString *sysctl_data = NULL;
 	GKeyFile *keyfile;
 	GError *error = NULL;
 	int tmp, ret = -1;
 
-	/* Read file contents to a string. */
-	if (!g_file_get_contents ("/etc/sysctl.conf", &contents, &len, NULL))
-		if (!g_file_get_contents ("/lib/sysctl.d/sysctl.conf", &contents, &len, NULL))
-			return -1;
-
 	/* Prepend a group so that we can use GKeyFile parser. */
-	sysctl_data = g_strdup_printf ("%s%s", group_name, contents);
+	sysctl_data = g_string_new (group_name);
+
+	/* Read file contents to a string. */
+	sysctl_conf_path = sysctl_conf_paths;
+	while (*sysctl_conf_path) {
+		if (g_file_get_contents (*sysctl_conf_path, &contents, NULL, NULL)) {
+			sysctl_data = g_string_append (sysctl_data, contents);
+			g_free (contents);
+		}
+		sysctl_conf_path++;
+	}
 
 	keyfile = g_key_file_new ();
 	if (keyfile == NULL)
 		goto done;
 
-	if (!g_key_file_load_from_data (keyfile, sysctl_data, len + strlen (group_name), G_KEY_FILE_NONE, NULL))
+	if (!g_key_file_load_from_data (keyfile, sysctl_data->str, -1, G_KEY_FILE_NONE, NULL))
 		goto done;
 
 	tmp = g_key_file_get_integer (keyfile, "forged_group", "net.ipv6.conf.default.use_tempaddr", &error);
@@ -2729,10 +2745,11 @@ ip6_use_tempaddr (void)
 		ret = tmp;
 
 done:
-	g_free (contents);
-	g_free (sysctl_data);
+	sysctl_data = g_string_free (sysctl_data, TRUE);
 	g_clear_error (&error);
 	g_key_file_free (keyfile);
+
+	nm_log_dbg (LOGD_CORE, "use_tempaddr set globally as %d", ret);
 
 	return ret;
 }
@@ -4263,6 +4280,7 @@ dispose (GObject *object)
 
 	priv->disposed = TRUE;
 
+#if 0
 	/* Don't down can-assume-connection capable devices that are activated with
 	 * a connection that can be assumed.
 	 */
@@ -4287,6 +4305,7 @@ dispose (GObject *object)
 				take_down = FALSE;
 		}
 	}
+#endif
 
 	/* Clear any queued transitions */
 	nm_device_queued_state_clear (self);

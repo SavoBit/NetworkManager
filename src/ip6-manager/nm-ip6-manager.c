@@ -918,6 +918,12 @@ process_route_change (NMIP6Manager *manager, struct nl_msg *msg)
 
 	device = nm_ip6_manager_get_device (manager, rtnl_route_get_oif (rtnlroute));
 
+	if (rtnl_route_get_flags(rtnlroute) & RTM_F_CLONED) {
+		nm_log_dbg (LOGD_IP6, "ignoring route cache entry");
+		rtnl_route_put (rtnlroute);
+		return NULL;
+	}
+
 	old_size = nl_cache_nitems (priv->route_cache);
 	nl_cache_include (priv->route_cache, (struct nl_object *)rtnlroute, NULL, NULL);
 

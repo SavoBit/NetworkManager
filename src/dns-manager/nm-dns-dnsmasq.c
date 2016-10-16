@@ -29,22 +29,32 @@
 #include <glib.h>
 #include <glib/gi18n.h>
 
+#include <dbus/dbus.h>
+#include <dbus/dbus-glib-lowlevel.h>
+#include <dbus/dbus-glib.h>
+
 #include "nm-dns-dnsmasq.h"
 #include "nm-logging.h"
 #include "nm-ip4-config.h"
 #include "nm-ip6-config.h"
 #include "nm-dns-utils.h"
+#include "nm-dbus-manager.h"
 
 G_DEFINE_TYPE (NMDnsDnsmasq, nm_dns_dnsmasq, NM_TYPE_DNS_PLUGIN)
 
 #define NM_DNS_DNSMASQ_GET_PRIVATE(o) (G_TYPE_INSTANCE_GET_PRIVATE ((o), NM_TYPE_DNS_DNSMASQ, NMDnsDnsmasqPrivate))
 
-#define PIDFILE NMRUNDIR "/dnsmasq.pid"
+#define PIDFILE "/run/sendsigs.omit.d/network-manager.dnsmasq.pid"
 #define CONFFILE NMRUNDIR "/dnsmasq.conf"
 #define CONFDIR NMCONFDIR "/dnsmasq.d"
 
+#define DNSMASQ_DBUS_SERVICE "org.freedesktop.NetworkManager.dnsmasq"
+#define DNSMASQ_DBUS_PATH "/uk/org/thekelleys/dnsmasq"
+#define DNSMASQ_DBUS_INTERFACE "uk.org.thekelleys.dnsmasq"
+
 typedef struct {
-	guint32 foo;
+	NMDBusManager *dbus_mgr;
+	guint name_owner_id;
 } NMDnsDnsmasqPrivate;
 
 /*******************************************/
@@ -69,12 +79,12 @@ find_dnsmasq (void)
 }
 
 static gboolean
-add_ip4_config (GString *str, NMIP4Config *ip4, gboolean split)
+add_ip4_config (DBusMessage *message, NMIP4Config *ip4, gboolean split)
 {
 	char buf[INET_ADDRSTRLEN + 1];
-	in_addr_t addr;
 	int nnameservers, i_nameserver, n, i;
 	gboolean added = FALSE;
+	guint32 addr;
 
 	nnameservers = nm_ip4_config_get_num_nameservers (ip4);
 
@@ -85,17 +95,18 @@ add_ip4_config (GString *str, NMIP4Config *ip4, gboolean split)
 			return FALSE;
 
 		for (i_nameserver = 0; i_nameserver < nnameservers; i_nameserver++) {
-			addr = nm_ip4_config_get_nameserver (ip4, i_nameserver);
-			memset (&buf[0], 0, sizeof (buf));
-			if (!inet_ntop (AF_INET, &addr, buf, sizeof (buf)))
-				return FALSE;
+			addr = g_htonl(nm_ip4_config_get_nameserver (ip4, i_nameserver));
+			dbus_message_append_args (message,
+			                          DBUS_TYPE_UINT32, &addr,
+			                          DBUS_TYPE_INVALID);
 
 			/* searches are preferred over domains */
 			n = nm_ip4_config_get_num_searches (ip4);
 			for (i = 0; i < n; i++) {
-				g_string_append_printf (str, "server=/%s/%s\n",
-				                        nm_ip4_config_get_search (ip4, i),
-				                        buf);
+				char *search = nm_ip4_config_get_search (ip4, i);
+				dbus_message_append_args (message,
+				                          DBUS_TYPE_STRING, &search,
+				                          DBUS_TYPE_INVALID);
 				added = TRUE;
 			}
 
@@ -103,9 +114,10 @@ add_ip4_config (GString *str, NMIP4Config *ip4, gboolean split)
 				/* If not searches, use any domains */
 				n = nm_ip4_config_get_num_domains (ip4);
 				for (i = 0; i < n; i++) {
-					g_string_append_printf (str, "server=/%s/%s\n",
-					                        nm_ip4_config_get_domain (ip4, i),
-					                        buf);
+					char *domain = nm_ip4_config_get_domain (ip4, i);
+					dbus_message_append_args (message,
+					                          DBUS_TYPE_STRING, &domain,
+					                          DBUS_TYPE_INVALID);
 					added = TRUE;
 				}
 			}
@@ -116,7 +128,9 @@ add_ip4_config (GString *str, NMIP4Config *ip4, gboolean split)
 			domains = nm_dns_utils_get_ip4_rdns_domains (ip4);
 			if (domains) {
 				for (iter = domains; iter && *iter; iter++)
-					g_string_append_printf (str, "server=/%s/%s\n", *iter, buf);
+					dbus_message_append_args (message,
+					                          DBUS_TYPE_STRING, &(*iter),
+					                          DBUS_TYPE_INVALID);
 				g_strfreev (domains);
 				added = TRUE;
 			}
@@ -126,66 +140,20 @@ add_ip4_config (GString *str, NMIP4Config *ip4, gboolean split)
 	/* If no searches or domains, just add the namservers */
 	if (!added) {
 		for (i = 0; i < nnameservers; i++) {
-			memset (&buf[0], 0, sizeof (buf));
-			addr = nm_ip4_config_get_nameserver (ip4, i);
-			if (inet_ntop (AF_INET, &addr, buf, sizeof (buf)))
-				g_string_append_printf (str, "server=%s\n", buf);
+			addr = g_htonl (nm_ip4_config_get_nameserver (ip4, i));
+			dbus_message_append_args (message,
+			                          DBUS_TYPE_UINT32, &addr,
+			                          DBUS_TYPE_INVALID);
 		}
 	}
 
 	return TRUE;
 }
 
-#define IP6_ADDR_BUFLEN (INET6_ADDRSTRLEN + 50)
-
-static char *
-ip6_addr_to_string (const struct in6_addr *addr, const char *iface)
-{
-	char *buf, *p;
-
-	/* allocate enough space for the address + interface name */
-	buf = g_malloc0 (IP6_ADDR_BUFLEN + 1);
-
-	/* inet_ntop is probably supposed to do this for us, but it doesn't */
-	if (IN6_IS_ADDR_V4MAPPED (addr)) {
-		if (!inet_ntop (AF_INET, &(addr->s6_addr32[3]), buf, IP6_ADDR_BUFLEN))
-			goto error;
-		return buf;
-	}
-
-	if (!inet_ntop (AF_INET6, addr, buf, IP6_ADDR_BUFLEN))
-		goto error;
-
-	/* In the case of addr being a link-local address, inet_ntop can either
-	 * return an address with scope identifier already in place (like
-	 * fe80::202:b3ff:fe8d:7aaf%wlan0) or it returns an address without
-	 * scope identifier at all (like fe80::202:b3ff:fe8d:7aaf)
-	 */
-	p = strchr (buf, '%');
-	if (p) {
-		/* If we got a scope identifier, we need to replace the '%'
-		 * with '@', since dnsmasq supports '%' in server= addresses
-		 * only since version 2.58 and up
-		 */
-		*p = '@';
-	} else if (IN6_IS_ADDR_LINKLOCAL (addr)) {
-		/* If we got no scope identifier at all append the interface name */
-		strncat (buf, "@", IP6_ADDR_BUFLEN - strlen (buf));
-		strncat (buf, iface, IP6_ADDR_BUFLEN - strlen (buf));
-	}
-
-	return buf;
-
-error:
-	g_free (buf);
-	return NULL;
-}
-
 static gboolean
-add_ip6_config (GString *str, NMIP6Config *ip6, gboolean split)
+add_ip6_config (DBusMessage *message, NMIP6Config *ip6, gboolean split)
 {
 	const struct in6_addr *addr;
-	char *buf = NULL;
 	int nnameservers, i_nameserver, n, i;
 	gboolean added = FALSE;
 	const char *iface;
@@ -201,16 +169,32 @@ add_ip6_config (GString *str, NMIP6Config *ip6, gboolean split)
 
 		for (i_nameserver = 0; i_nameserver < nnameservers; i_nameserver++) {
 			addr = nm_ip6_config_get_nameserver (ip6, i_nameserver);
-			buf = ip6_addr_to_string (addr, iface);
-			if (!buf)
-				return FALSE;
+			dbus_message_append_args (message,
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[0],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[1],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[2],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[3],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[4],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[5],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[6],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[7],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[8],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[9],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[10],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[11],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[12],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[13],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[14],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[15],
+			                          DBUS_TYPE_INVALID);
 
 			/* searches are preferred over domains */
 			n = nm_ip6_config_get_num_searches (ip6);
 			for (i = 0; i < n; i++) {
-				g_string_append_printf (str, "server=/%s/%s\n",
-				                        nm_ip6_config_get_search (ip6, i),
-				                        buf);
+				char *search = nm_ip6_config_get_search (ip6, i);
+				dbus_message_append_args (message,
+				                          DBUS_TYPE_STRING, &search,
+				                          DBUS_TYPE_INVALID);
 				added = TRUE;
 			}
 
@@ -218,26 +202,38 @@ add_ip6_config (GString *str, NMIP6Config *ip6, gboolean split)
 				/* If not searches, use any domains */
 				n = nm_ip6_config_get_num_domains (ip6);
 				for (i = 0; i < n; i++) {
-					g_string_append_printf (str, "server=/%s/%s\n",
-					                        nm_ip6_config_get_domain (ip6, i),
-					                        buf);
+					char *domain = nm_ip6_config_get_domain (ip6, i);
+					dbus_message_append_args (message,
+					                          DBUS_TYPE_STRING, &domain,
+					                          DBUS_TYPE_INVALID);
 					added = TRUE;
 				}
 			}
 		}
-
-		g_free (buf);
 	}
 
 	/* If no searches or domains, just add the namservers */
 	if (!added) {
 		for (i = 0; i < nnameservers; i++) {
 			addr = nm_ip6_config_get_nameserver (ip6, i);
-			buf = ip6_addr_to_string (addr, iface);
-			if (buf) {
-				g_string_append_printf (str, "server=%s\n", buf);
-				g_free (buf);
-			}
+			dbus_message_append_args (message,
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[0],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[1],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[2],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[3],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[4],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[5],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[6],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[7],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[8],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[9],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[10],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[11],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[12],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[13],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[14],
+			                          DBUS_TYPE_BYTE, &addr->s6_addr[15],
+			                          DBUS_TYPE_INVALID);
 		}
 	}
 
@@ -245,54 +241,28 @@ add_ip6_config (GString *str, NMIP6Config *ip6, gboolean split)
 }
 
 static gboolean
-update (NMDnsPlugin *plugin,
-        const GSList *vpn_configs,
-        const GSList *dev_configs,
-        const GSList *other_configs,
-        const char *hostname)
+start_dnsmasq (NMDnsDnsmasq *self)
 {
-	NMDnsDnsmasq *self = NM_DNS_DNSMASQ (plugin);
-	GString *conf;
-	GSList *iter;
+	NMDnsDnsmasqPrivate *priv = NM_DNS_DNSMASQ_GET_PRIVATE (self);
 	const char *argv[15];
-	GError *error = NULL;
-	int ignored;
-	GPid pid = 0;
+	char *dnsmasq_owner;
+ 	GError *error = NULL;
+	GString *conf;
+ 	GPid pid = 0;
 	guint idx = 0;
+	int ignored;
 
-	/* Kill the old dnsmasq; there doesn't appear to be a way to get dnsmasq
-	 * to reread the config file using SIGHUP or similar.  This is a small race
-	 * here when restarting dnsmasq when DNS requests could go to the upstream
-	 * servers instead of to dnsmasq.
-	 */
-	nm_dns_plugin_child_kill (plugin);
+	/* dnsmasq is probably already started; if it's the case, don't do
+	 * anything more.
+ 	 */
+	dnsmasq_owner = nm_dbus_manager_get_name_owner (priv->dbus_mgr, DNSMASQ_DBUS_SERVICE, NULL);
+	if (dnsmasq_owner != NULL)
+		return TRUE;
+
+	/* Start dnsmasq */
 
 	/* Build up the new dnsmasq config file */
 	conf = g_string_sized_new (150);
-
-	/* Use split DNS for VPN configs */
-	for (iter = (GSList *) vpn_configs; iter; iter = g_slist_next (iter)) {
-		if (NM_IS_IP4_CONFIG (iter->data))
-			add_ip4_config (conf, NM_IP4_CONFIG (iter->data), TRUE);
-		else if (NM_IS_IP6_CONFIG (iter->data))
-			add_ip6_config (conf, NM_IP6_CONFIG (iter->data), TRUE);
-	}
-
-	/* Now add interface configs without split DNS */
-	for (iter = (GSList *) dev_configs; iter; iter = g_slist_next (iter)) {
-		if (NM_IS_IP4_CONFIG (iter->data))
-			add_ip4_config (conf, NM_IP4_CONFIG (iter->data), FALSE);
-		else if (NM_IS_IP6_CONFIG (iter->data))
-			add_ip6_config (conf, NM_IP6_CONFIG (iter->data), FALSE);
-	}
-
-	/* And any other random configs */
-	for (iter = (GSList *) other_configs; iter; iter = g_slist_next (iter)) {
-		if (NM_IS_IP4_CONFIG (iter->data))
-			add_ip4_config (conf, NM_IP4_CONFIG (iter->data), FALSE);
-		else if (NM_IS_IP6_CONFIG (iter->data))
-			add_ip6_config (conf, NM_IP6_CONFIG (iter->data), FALSE);
-	}
 
 	/* Write out the config file */
 	if (!g_file_set_contents (CONFFILE, conf->str, -1, &error)) {
@@ -314,10 +284,11 @@ update (NMDnsPlugin *plugin,
 	argv[idx++] = "--no-hosts"; /* don't use /etc/hosts to resolve */
 	argv[idx++] = "--bind-interfaces";
 	argv[idx++] = "--pid-file=" PIDFILE;
-	argv[idx++] = "--listen-address=127.0.0.1"; /* Should work for both 4 and 6 */
+	argv[idx++] = "--listen-address=127.0.1.1"; /* Should work for both 4 and 6 */
 	argv[idx++] = "--conf-file=" CONFFILE;
-	argv[idx++] = "--cache-size=400";
+	argv[idx++] = "--cache-size=0";
 	argv[idx++] = "--proxy-dnssec"; /* Allow DNSSEC to pass through */
+	argv[idx++] = "--enable-dbus=" DNSMASQ_DBUS_SERVICE;
 
 	/* dnsmasq exits if the conf dir is not present */
 	if (g_file_test (CONFDIR, G_FILE_TEST_IS_DIR))
@@ -334,7 +305,154 @@ out:
 	return pid ? TRUE : FALSE;
 }
 
+static gboolean
+update (NMDnsPlugin *plugin,
+        const GSList *vpn_configs,
+        const GSList *dev_configs,
+        const GSList *other_configs,
+        const char *hostname)
+{
+	NMDnsDnsmasq *self = NM_DNS_DNSMASQ (plugin);
+	NMDnsDnsmasqPrivate *priv = NM_DNS_DNSMASQ_GET_PRIVATE (self);
+	DBusConnection *connection;
+	DBusMessage *message;
+	GSList *iter, *vpn_configs_copy;
+	GError *error = NULL;
+	gboolean have_dnsmasq = FALSE;
+	gboolean might_default = FALSE;
+	gboolean ret = FALSE;
+	dbus_bool_t result;
+
+	have_dnsmasq = start_dnsmasq (self);
+
+	if (!have_dnsmasq)
+		goto out;
+
+	connection = nm_dbus_manager_get_dbus_connection (priv->dbus_mgr);
+	if (!connection) {
+		nm_log_warn (LOGD_DNS, "Could not get the system bus to speak to dnsmasq.");
+		goto out;
+	}
+
+	message = dbus_message_new_method_call (DNSMASQ_DBUS_SERVICE, DNSMASQ_DBUS_PATH,
+	                                        DNSMASQ_DBUS_INTERFACE, "SetServers");
+
+	/* Work on a copy of the vpn_configs list because we might want to remove
+	 * some items from it, yet not affect other DNS plugins that might run
+	 */
+	vpn_configs_copy = g_slist_copy (vpn_configs);
+
+	/* Look for a VPN config that is set to get a default route, and if
+	 * there is one, install it *without* splitting into per-domain servers.
+	 */
+	for (iter = (GSList *) vpn_configs_copy; iter; iter = g_slist_next (iter)) {
+		if (NM_IS_IP4_CONFIG (iter->data))
+			might_default = !nm_ip4_config_get_never_default (iter->data);
+		else if (NM_IS_IP6_CONFIG (iter->data))
+			might_default = !nm_ip6_config_get_never_default (iter->data);
+		if (might_default) {
+			if (NM_IS_IP4_CONFIG (iter->data))
+				add_ip4_config (message, NM_IP4_CONFIG (iter->data), FALSE);
+			else if (NM_IS_IP6_CONFIG (iter->data))
+				add_ip6_config (message, NM_IP6_CONFIG (iter->data), FALSE);
+			vpn_configs_copy = g_slist_remove (vpn_configs_copy, iter->data);
+			break;
+		}
+	}
+
+	/* Use split DNS for remaining VPN configs */
+	for (iter = (GSList *) vpn_configs_copy; iter; iter = g_slist_next (iter)) {
+		if (NM_IS_IP4_CONFIG (iter->data))
+			add_ip4_config (message, NM_IP4_CONFIG (iter->data), TRUE);
+		else if (NM_IS_IP6_CONFIG (iter->data))
+			add_ip6_config (message, NM_IP6_CONFIG (iter->data), TRUE);
+	}
+
+	/* Now add interface configs without split DNS, unless some VPN
+	 * grabs the default route (in which case we should not install them
+	 * at all, since even split DNS may fail, if the local subnet defines
+	 * its domain as being the same domain as what the "default" VPN provides.
+	 */
+	if (!might_default) {
+		for (iter = (GSList *) dev_configs; iter; iter = g_slist_next (iter)) {
+			if (NM_IS_IP4_CONFIG (iter->data))
+				add_ip4_config (message, NM_IP4_CONFIG (iter->data), FALSE);
+			else if (NM_IS_IP6_CONFIG (iter->data))
+				add_ip6_config (message, NM_IP6_CONFIG (iter->data), FALSE);
+		}
+	}
+
+	/* And any other random configs */
+	for (iter = (GSList *) other_configs; iter; iter = g_slist_next (iter)) {
+		if (NM_IS_IP4_CONFIG (iter->data))
+			add_ip4_config (message, NM_IP4_CONFIG (iter->data), FALSE);
+		else if (NM_IS_IP6_CONFIG (iter->data))
+			add_ip6_config (message, NM_IP6_CONFIG (iter->data), FALSE);
+	}
+
+	if (!nm_dbus_manager_get_name_owner (priv->dbus_mgr, DNSMASQ_DBUS_SERVICE, &error)) {
+		nm_log_warn (LOGD_DNS, "dnsmasq not available on the bus, can't update servers.");
+		if (error)
+			nm_log_err (LOGD_DNS, "dnsmasq owner not found on bus: %s", error->message);
+		goto out;
+	}
+
+	dbus_message_set_no_reply (message, TRUE);
+
+	result = dbus_connection_send (connection, message, NULL);
+	if (!result) {
+		nm_log_err (LOGD_DNS, "Could not send dnsmasq SetServers method.");
+		goto out;
+	}
+
+	ret = TRUE;
+
+	/* If all the configs lists are empty, there is just nothing to be caching --
+	 * we cleared up the dnsmasq cache; but we should also fail the update, so
+	 * that we don't write 127.0.1.1 to resolv.conf.
+	 */
+	if (((vpn_configs && g_slist_length (vpn_configs) < 1) || !vpn_configs) &&
+	    ((dev_configs && g_slist_length (dev_configs) < 1) || !dev_configs) &&
+	    ((other_configs && g_slist_length (other_configs) < 1) || !other_configs))
+		ret = FALSE;
+
+out:
+	if (message)
+		dbus_message_unref (message);
+
+	return ret;
+}
+
 /****************************************************************/
+
+static void
+name_owner_changed_cb (NMDBusManager *dbus_mgr,
+                       const char *name,
+                       const char *old_owner,
+                       const char *new_owner,
+                       gpointer user_data)
+{
+	NMDnsDnsmasq *self = NM_DNS_DNSMASQ (user_data);
+	gboolean old_owner_good = (old_owner && strlen (old_owner));
+	gboolean new_owner_good = (new_owner && strlen (new_owner));
+
+	/* Can't handle the signal if its not from dnsmasq */
+	if (strcmp (DNSMASQ_DBUS_SERVICE, name))
+		return;
+
+	if (!old_owner_good && new_owner_good) {
+		nm_log_warn (LOGD_DNS, "dnsmasq appeared on DBus: %s",
+		             new_owner);
+		g_signal_emit_by_name (self, NM_DNS_PLUGIN_APPEARED);
+	} else if (old_owner_good && new_owner_good) {
+		nm_log_dbg (LOGD_DNS, "DBus name owner for dnsmasq changed: %s -> %s",
+		             old_owner, new_owner);
+		g_signal_emit_by_name (self, NM_DNS_PLUGIN_APPEARED);
+	} else {
+		nm_log_warn (LOGD_DNS, "dnsmasq disappeared from the bus.");
+		g_signal_emit_by_name (self, NM_DNS_PLUGIN_FAILED);
+	}
+}
 
 static const char *
 dm_exit_code_to_msg (int status)
@@ -413,12 +531,30 @@ nm_dns_dnsmasq_new (void)
 static void
 nm_dns_dnsmasq_init (NMDnsDnsmasq *self)
 {
+	NMDnsDnsmasqPrivate *priv = NM_DNS_DNSMASQ_GET_PRIVATE (self);
+
+	priv->dbus_mgr = nm_dbus_manager_get ();
+
+	g_assert (priv->dbus_mgr);
+
+	priv->name_owner_id = g_signal_connect (priv->dbus_mgr,
+	                                        NM_DBUS_MANAGER_NAME_OWNER_CHANGED,
+	                                        G_CALLBACK (name_owner_changed_cb),
+	                                        self);
 }
 
 static void
 dispose (GObject *object)
 {
+	NMDnsDnsmasqPrivate *priv = NM_DNS_DNSMASQ_GET_PRIVATE (object);
+
 	unlink (CONFFILE);
+
+	if (priv->dbus_mgr) {
+		if (priv->name_owner_id)
+			g_signal_handler_disconnect (priv->dbus_mgr, priv->name_owner_id);
+		g_object_unref (priv->dbus_mgr);
+	}
 
 	G_OBJECT_CLASS (nm_dns_dnsmasq_parent_class)->dispose (object);
 }

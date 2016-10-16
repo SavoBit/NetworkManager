@@ -92,6 +92,7 @@ static guint signals[LAST_SIGNAL] = { 0 };
 gboolean
 nm_modem_get_mm_enabled (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 	return NM_MODEM_GET_PRIVATE (self)->mm_enabled;
 }
 
@@ -100,6 +101,8 @@ nm_modem_set_mm_enabled (NMModem *self,
                          gboolean enabled)
 {
 	NMModemPrivate *priv;
+
+	nm_log_dbg (LOGD_MB, "in %s: %d", __func__, enabled);
 
 	priv = NM_MODEM_GET_PRIVATE (self);
 
@@ -110,6 +113,7 @@ nm_modem_set_mm_enabled (NMModem *self,
 gboolean
 nm_modem_get_mm_connected (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 	return NM_MODEM_GET_PRIVATE (self)->mm_connected;
 }
 
@@ -119,6 +123,8 @@ nm_modem_get_mm_connected (NMModem *self)
 static void
 ppp_state_changed (NMPPPManager *ppp_manager, NMPPPStatus status, gpointer user_data)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	switch (status) {
 	case NM_PPP_STATUS_DISCONNECT:
 		g_signal_emit (NM_MODEM (user_data), signals[PPP_FAILED], 0, NM_DEVICE_STATE_REASON_PPP_DISCONNECT);
@@ -139,6 +145,9 @@ ppp_ip4_config (NMPPPManager *ppp_manager,
 {
 	NMModem *self = NM_MODEM (user_data);
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	guint32 i, num;
 	guint32 bad_dns1 = htonl (0x0A0B0C0D);
 	guint32 good_dns1 = htonl (0x04020201);  /* GTE nameserver */
@@ -199,6 +208,8 @@ ppp_stats (NMPPPManager *ppp_manager,
 	NMModem *self = NM_MODEM (user_data);
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	if (priv->in_bytes != in_bytes || priv->out_bytes != out_bytes) {
 		priv->in_bytes = in_bytes;
 		priv->out_bytes = out_bytes;
@@ -217,6 +228,8 @@ ppp_stage3_ip4_config_start (NMModem *self,
 	GError *error = NULL;
 	NMActStageReturn ret;
 	guint ip_timeout = 20;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	g_return_val_if_fail (self != NULL, NM_ACT_STAGE_RETURN_FAILURE);
 	g_return_val_if_fail (NM_IS_MODEM (self), NM_ACT_STAGE_RETURN_FAILURE);
@@ -281,6 +294,8 @@ nm_modem_stage3_ip4_config_start (NMModem *self,
 	NMActRequest *req;
 	NMActStageReturn ret;
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_return_val_if_fail (self != NULL, NM_ACT_STAGE_RETURN_FAILURE);
 	g_return_val_if_fail (NM_IS_MODEM (self), NM_ACT_STAGE_RETURN_FAILURE);
 	g_return_val_if_fail (device != NULL, NM_ACT_STAGE_RETURN_FAILURE);
@@ -319,6 +334,8 @@ nm_modem_ip4_pre_commit (NMModem *modem,
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (modem);
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	/* If the modem has an ethernet-type data interface (ie, not PPP and thus
 	 * not point-to-point) and IP config has a /32 prefix, then we assume that
 	 * ARP will be pointless and we turn it off.
@@ -341,6 +358,8 @@ nm_modem_stage3_ip6_config_start (NMModem *self,
                                   NMDeviceClass *device_class,
                                   NMDeviceStateReason *reason)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	/* FIXME: We don't support IPv6 on modems quite yet... */
 	nm_device_activate_schedule_ip6_config_timeout (device);
 	return NM_ACT_STAGE_RETURN_POSTPONE;
@@ -352,6 +371,8 @@ static void
 cancel_get_secrets (NMModem *self)
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	if (priv->secrets_id) {
 		nm_act_request_cancel_secrets (priv->act_request, priv->secrets_id);
@@ -368,6 +389,8 @@ modem_secrets_cb (NMActRequest *req,
 {
 	NMModem *self = NM_MODEM (user_data);
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	g_return_if_fail (call_id == priv->secrets_id);
 
@@ -387,6 +410,8 @@ nm_modem_get_secrets (NMModem *self,
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
 	NMSettingsGetSecretsFlags flags = NM_SETTINGS_GET_SECRETS_FLAG_ALLOW_INTERACTION;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	cancel_get_secrets (self);
 
@@ -413,6 +438,8 @@ act_stage1_prepare (NMModem *modem,
                     const char **out_setting_name,
                     NMDeviceStateReason *reason)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	*reason = NM_DEVICE_STATE_REASON_UNKNOWN;
 	return NM_ACT_STAGE_RETURN_FAILURE;
 }
@@ -427,6 +454,8 @@ nm_modem_act_stage1_prepare (NMModem *self,
 	GPtrArray *hints = NULL;
 	const char *setting_name = NULL;
 	NMSettingsGetSecretsFlags flags = NM_SETTINGS_GET_SECRETS_FLAG_ALLOW_INTERACTION;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	if (priv->act_request)
 		g_object_unref (priv->act_request);
@@ -470,6 +499,8 @@ nm_modem_act_stage2_config (NMModem *self,
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (self);
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	/* Clear secrets tries counter since secrets were successfully used
 	 * already if we get here.
 	 */
@@ -485,6 +516,8 @@ nm_modem_get_best_auto_connection (NMModem *self,
                                    GSList *connections,
                                    char **specific_object)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	if (NM_MODEM_GET_CLASS (self)->get_best_auto_connection)
 		return NM_MODEM_GET_CLASS (self)->get_best_auto_connection (self, connections, specific_object);
 	return NULL;
@@ -497,6 +530,8 @@ nm_modem_check_connection_compatible (NMModem *self,
                                       NMConnection *connection,
                                       GError **error)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	if (NM_MODEM_GET_CLASS (self)->check_connection_compatible)
 		return NM_MODEM_GET_CLASS (self)->check_connection_compatible (self, connection, error);
 	return FALSE;
@@ -510,6 +545,8 @@ nm_modem_complete_connection (NMModem *self,
                               const GSList *existing_connections,
                               GError **error)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	if (NM_MODEM_GET_CLASS (self)->complete_connection)
 		return NM_MODEM_GET_CLASS (self)->complete_connection (self, connection, existing_connections, error);
 	return FALSE;
@@ -522,6 +559,8 @@ deactivate (NMModem *self, NMDevice *device)
 {
 	NMModemPrivate *priv;
 	int ifindex;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	g_return_if_fail (self != NULL);
 	g_return_if_fail (NM_IS_MODEM (self));
@@ -572,6 +611,8 @@ deactivate (NMModem *self, NMDevice *device)
 void
 nm_modem_deactivate (NMModem *self, NMDevice *device)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	NM_MODEM_GET_CLASS (self)->deactivate (self, device);
 }
 
@@ -585,6 +626,8 @@ nm_modem_device_state_changed (NMModem *self,
 {
 	gboolean was_connected = FALSE, warn = TRUE;
 	NMModemPrivate *priv;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	g_return_if_fail (self != NULL);
 	g_return_if_fail (NM_IS_MODEM (self));
@@ -629,15 +672,20 @@ nm_modem_device_state_changed (NMModem *self,
 const char *
 nm_modem_get_uid (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_return_val_if_fail (self != NULL, NULL);
 	g_return_val_if_fail (NM_IS_MODEM (self), NULL);
 
+	nm_log_dbg (LOGD_MB, "%s: uid %s", __func__, NM_MODEM_GET_PRIVATE (self)->uid);
 	return NM_MODEM_GET_PRIVATE (self)->uid;
 }
 
 const char *
 nm_modem_get_path (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_return_val_if_fail (self != NULL, NULL);
 	g_return_val_if_fail (NM_IS_MODEM (self), NULL);
 
@@ -647,6 +695,8 @@ nm_modem_get_path (NMModem *self)
 const char *
 nm_modem_get_control_port (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_return_val_if_fail (self != NULL, NULL);
 	g_return_val_if_fail (NM_IS_MODEM (self), NULL);
 
@@ -656,6 +706,8 @@ nm_modem_get_control_port (NMModem *self)
 const char *
 nm_modem_get_data_port (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_return_val_if_fail (self != NULL, NULL);
 	g_return_val_if_fail (NM_IS_MODEM (self), NULL);
 
@@ -672,6 +724,7 @@ nm_modem_get_data_port (NMModem *self)
 static void
 nm_modem_init (NMModem *self)
 {
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 }
 
 static GObject*
@@ -681,6 +734,8 @@ constructor (GType type,
 {
 	GObject *object;
 	NMModemPrivate *priv;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	object = G_OBJECT_CLASS (nm_modem_parent_class)->constructor (type,
 	                                                              n_construct_params,
@@ -712,6 +767,8 @@ get_property (GObject *object, guint prop_id,
               GValue *value, GParamSpec *pspec)
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (object);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	switch (prop_id) {
 	case PROP_PATH:
@@ -749,6 +806,8 @@ set_property (GObject *object, guint prop_id,
               const GValue *value, GParamSpec *pspec)
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (object);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	switch (prop_id) {
 	case PROP_PATH:
@@ -788,6 +847,8 @@ dispose (GObject *object)
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (object);
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	if (priv->act_request) {
 		g_object_unref (priv->act_request);
 		priv->act_request = NULL;
@@ -801,6 +862,8 @@ finalize (GObject *object)
 {
 	NMModemPrivate *priv = NM_MODEM_GET_PRIVATE (object);
 
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+
 	g_free (priv->uid);
 	g_free (priv->path);
 	g_free (priv->control_port);
@@ -813,6 +876,8 @@ static void
 nm_modem_class_init (NMModemClass *klass)
 {
 	GObjectClass *object_class = G_OBJECT_CLASS (klass);
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	g_type_class_add_private (object_class, sizeof (NMModemPrivate));
 

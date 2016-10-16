@@ -26,6 +26,7 @@
 #include "nm-modem.h"
 #include "nm-modem-cdma.h"
 #include "nm-modem-gsm.h"
+#include "nm-modem-ofono.h"
 #include "nm-device-private.h"
 #include "nm-properties-changed-signal.h"
 #include "nm-rfkill.h"
@@ -170,8 +171,12 @@ data_port_changed_cb (NMModem *modem, GParamSpec *pspec, gpointer user_data)
 static void
 modem_enabled_cb (NMModem *modem, GParamSpec *pspec, gpointer user_data)
 {
+	nm_log_dbg(LOGD_MB, "in %s: %s/%d/%d", __func__, G_OBJECT_TYPE_NAME(modem), (int)modem, (int)user_data);
+
 	NMDeviceModem *self = NM_DEVICE_MODEM (user_data);
 	NMDeviceModemPrivate *priv = NM_DEVICE_MODEM_GET_PRIVATE (self);
+
+	nm_log_dbg(LOGD_MB, "in %s, got objects: %s", __func__, G_OBJECT_TYPE_NAME(user_data));
 
 	set_enabled (NM_DEVICE (self), nm_modem_get_mm_enabled (priv->modem));
 
@@ -325,6 +330,8 @@ set_enabled (NMDevice *device, gboolean enabled)
 	NMDeviceModemPrivate *priv = NM_DEVICE_MODEM_GET_PRIVATE (self);
 	NMDeviceState state;
 
+	nm_log_dbg (LOGD_MB, "in %s: %d", __func__, enabled);
+
 	if (priv->modem) {
 		nm_modem_set_mm_enabled (priv->modem, enabled);
 
@@ -365,6 +372,13 @@ nm_device_modem_new (NMModem *modem, const char *driver)
 		type_desc = "GSM/UMTS";
 		ip_iface = nm_modem_get_data_port (modem);
 	}
+	else if (NM_IS_MODEM_OFONO (modem)) {
+		caps = NM_DEVICE_MODEM_CAPABILITY_GSM_UMTS
+		       | NM_DEVICE_MODEM_CAPABILITY_OFONO;
+		current_caps = caps;
+		type_desc = "Ofono";
+		/* data port not yet known in broadband modems */
+	}
 #if WITH_MODEM_MANAGER_1
 	else if (NM_IS_MODEM_BROADBAND (modem)) {
 		nm_modem_broadband_get_capabilities (NM_MODEM_BROADBAND (modem), &caps, &current_caps);
@@ -399,6 +413,7 @@ nm_device_modem_init (NMDeviceModem *self)
 static void
 set_modem (NMDeviceModem *self, NMModem *modem)
 {
+	nm_log_dbg (LOGD_MB, "called set_modem: %s / %d / %s / %d", G_OBJECT_TYPE_NAME(self), (int)self, G_OBJECT_TYPE_NAME(modem), (int)modem);
 	NMDeviceModemPrivate *priv = NM_DEVICE_MODEM_GET_PRIVATE (self);
 
 	g_return_if_fail (modem != NULL);
@@ -423,6 +438,7 @@ static void
 set_property (GObject *object, guint prop_id,
 			  const GValue *value, GParamSpec *pspec)
 {
+	nm_log_dbg (LOGD_MB, "called set_property for: %d / %s / %d", prop_id, G_OBJECT_TYPE_NAME(object), (int)object);
 	NMDeviceModemPrivate *priv = NM_DEVICE_MODEM_GET_PRIVATE (object);
 
 	switch (prop_id) {

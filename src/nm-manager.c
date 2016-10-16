@@ -59,6 +59,7 @@
 #include "nm-marshal.h"
 #include "nm-dbus-glib-types.h"
 #include "nm-udev-manager.h"
+#include "nm-urfkill-manager.h"
 #include "nm-hostname-provider.h"
 #include "nm-bluez-manager.h"
 #include "nm-bluez-common.h"
@@ -222,6 +223,9 @@ typedef struct {
 	guint          dbus_connection_changed_id;
 	NMUdevManager *udev_mgr;
 	NMBluezManager *bluez_mgr;
+#if WITH_URFKILL
+	NMUrfkillManager *urfkill_mgr;
+#endif
 
 	/* List of NMDeviceFactoryFunc pointers sorted in priority order */
 	GSList *factories;
@@ -250,6 +254,8 @@ typedef struct {
 	guint fw_changed_id;
 
 	guint timestamp_update_id;
+
+	guint wifi_initial_id;
 
 	GHashTable *nm_bridges;
 
@@ -618,6 +624,12 @@ nm_manager_update_state (NMManager *manager)
 				}
 			}
 
+			if (state == NM_DEVICE_STATE_UNMANAGED) {
+				new_state = NM_STATE_CONNECTED;
+				nm_log_info (LOGD_CORE, "Unmanaged Device found; state CONNECTED forced. "
+						"(see http://bugs.launchpad.net/bugs/191889)");
+			}
+
 			if (nm_device_is_activating (dev))
 				new_state = NM_STATE_CONNECTING;
 			else if (new_state != NM_STATE_CONNECTING) {
@@ -672,6 +684,7 @@ remove_one_device (NMManager *manager,
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (manager);
 
 	if (nm_device_get_managed (device)) {
+#if 0
 		/* When quitting, we want to leave up interfaces & connections
 		 * that can be taken over again (ie, "assumed") when NM restarts
 		 * so that '/etc/init.d/NetworkManager restart' will not distrupt
@@ -683,6 +696,7 @@ remove_one_device (NMManager *manager,
 		if (   !nm_device_can_assume_connections (device)
 		    || (nm_device_get_state (device) != NM_DEVICE_STATE_ACTIVATED)
 		    || !quitting)
+#endif
 			nm_device_set_managed (device, FALSE, NM_DEVICE_STATE_REASON_REMOVED);
 	}
 
@@ -1882,7 +1896,7 @@ add_device (NMManager *self, NMDevice *device)
 	static guint32 devcount = 0;
 	const GSList *unmanaged_specs;
 	NMConnection *existing = NULL;
-	gboolean managed = FALSE, enabled = FALSE;
+	gboolean managed = FALSE, enabled = FALSE, inhibit_managed = FALSE;
 	RfKillType rtype;
 	NMDeviceType devtype;
 
@@ -1900,6 +1914,17 @@ add_device (NMManager *self, NMDevice *device)
 	 * the ethernet device later in favor of the modem device.
 	 */
 	if ((devtype != NM_DEVICE_TYPE_MODEM) && find_device_by_ip_iface (self, iface)) {
+		g_object_unref (device);
+		return;
+	}
+
+	/*
+	 * Explicitly ignore p2p Wi-Fi devices exposed by Android JB Wi-Fi drivers.
+	 */
+	if ((devtype == NM_DEVICE_TYPE_WIFI) && g_strcmp0 ("p2p0", iface) == 0) {
+		nm_log_info (LOGD_HW, "(%s): ignoring P2P wireless iface (ifindex: %d)",
+					 iface, nm_device_get_ifindex (device));
+
 		g_object_unref (device);
 		return;
 	}
@@ -1934,6 +1959,14 @@ add_device (NMManager *self, NMDevice *device)
 		g_signal_connect (device, NM_DEVICE_MODEM_ENABLE_CHANGED,
 		                  G_CALLBACK (manager_modem_enabled_changed),
 		                  self);
+	} else if (devtype == NM_DEVICE_TYPE_BRIDGE) {
+		GSList *connections = NULL;
+
+		connections = nm_settings_get_connections (priv->settings);
+		inhibit_managed = nm_device_connection_match_config (device, (const GSList *) connections) == NULL
+				 ? TRUE : FALSE;
+		nm_log_dbg (LOGD_HW, "MATT: should inhibit: %s", inhibit_managed ? "true" : "false");
+		g_slist_free (connections);
 	}
 
 	/* Update global rfkill state for this device type with the device's
@@ -1982,7 +2015,8 @@ add_device (NMManager *self, NMDevice *device)
 	/* Start the device if it's supposed to be managed */
 	unmanaged_specs = nm_settings_get_unmanaged_specs (priv->settings);
 	if (   !manager_sleeping (self)
-	    && !nm_device_spec_match_list (device, unmanaged_specs)) {
+	    && !nm_device_spec_match_list (device, unmanaged_specs)
+	    && !inhibit_managed) {
 		nm_device_set_managed (device,
 		                       TRUE,
 		                       existing ? NM_DEVICE_STATE_REASON_CONNECTION_ASSUMED :
@@ -3357,6 +3391,7 @@ do_sleep_wake (NMManager *self)
 {
 	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
 	const GSList *unmanaged_specs;
+	gboolean inhibit_managed = FALSE;
 	GSList *iter;
 
 	if (manager_sleeping (self)) {
@@ -3382,6 +3417,7 @@ do_sleep_wake (NMManager *self)
 		/* Re-manage managed devices */
 		for (iter = priv->devices; iter; iter = iter->next) {
 			NMDevice *device = NM_DEVICE (iter->data);
+			NMDeviceType devtype = nm_device_get_device_type (device);
 			guint i;
 
 			/* enable/disable wireless devices since that we don't respond
@@ -3401,9 +3437,19 @@ do_sleep_wake (NMManager *self)
 					nm_device_set_enabled (device, enabled);
 			}
 
+		        if (devtype == NM_DEVICE_TYPE_BRIDGE) {
+				GSList *connections = NULL;
+
+				connections = nm_settings_get_connections (priv->settings);
+				inhibit_managed = nm_device_connection_match_config (device, (const GSList *) connections) == NULL
+				                       ? TRUE : FALSE;
+				nm_log_dbg (LOGD_HW, "MATT: should inhibit on wake: %s", inhibit_managed ? "true" : "false");
+				g_slist_free (connections);
+			}
+
 			g_object_set (G_OBJECT (device), NM_DEVICE_AUTOCONNECT, TRUE, NULL);
 
-			if (nm_device_spec_match_list (device, unmanaged_specs))
+			if (nm_device_spec_match_list (device, unmanaged_specs) || inhibit_managed)
 				nm_device_set_managed (device, FALSE, NM_DEVICE_STATE_REASON_NOW_UNMANAGED);
 			else
 				nm_device_set_managed (device, TRUE, NM_DEVICE_STATE_REASON_NOW_MANAGED);
@@ -4286,6 +4332,70 @@ out:
 	return DBUS_HANDLER_RESULT_HANDLED;
 }
 
+#if WITH_URFKILL
+static void
+urfkill_wlan_state_changed_cb (NMUrfkillManager *mgr,
+                               gboolean enabled,
+                               gpointer user_data)
+{
+	NMManager *self = NM_MANAGER (user_data);
+	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+	GError *error = NULL;
+
+	if (priv->wifi_initial_id) {
+		g_source_remove (priv->wifi_initial_id);
+		priv->wifi_initial_id = 0;
+	}
+
+	manager_update_radio_enabled (self,
+	                              &priv->radio_states[RFKILL_TYPE_WLAN],
+	                              enabled);
+
+	/* Update enabled key in state file */
+	if (priv->state_file) {
+		if (!write_value_to_state_file (priv->state_file,
+		                                "main", "WirelessEnabled",
+		                                G_TYPE_BOOLEAN, (gpointer) &enabled,
+		                                &error)) {
+			nm_log_warn (LOGD_CORE, "writing to state file %s failed: (%d) %s.",
+			             priv->state_file,
+			             error ? error->code : -1,
+			             (error && error->message) ? error->message : "unknown");
+			g_clear_error (&error);
+		}
+	}
+}
+
+static void
+urfkill_wwan_state_changed_cb (NMUrfkillManager *mgr,
+                               gboolean enabled,
+                               gpointer user_data)
+{
+	NMManager *self = NM_MANAGER (user_data);
+	NMManagerPrivate *priv = NM_MANAGER_GET_PRIVATE (self);
+	GError *error = NULL;
+
+	manager_update_radio_enabled (self,
+	                              &priv->radio_states[RFKILL_TYPE_WWAN],
+	                              enabled);
+
+	/* Update enabled key in state file */
+	if (priv->state_file) {
+		if (!write_value_to_state_file (priv->state_file,
+		                                "main", "WWanEnabled",
+		                                G_TYPE_BOOLEAN, (gpointer) &enabled,
+		                                &error)) {
+			nm_log_warn (LOGD_CORE, "writing to state file %s failed: (%d) %s.",
+			             priv->state_file,
+			             error ? error->code : -1,
+			             (error && error->message) ? error->message : "unknown");
+			g_clear_error (&error);
+		}
+	}
+
+}
+#endif /* WITH_URFKILL */
+
 static NMManager *singleton = NULL;
 
 NMManager *
@@ -4293,6 +4403,28 @@ nm_manager_get (void)
 {
 	g_assert (singleton);
 	return g_object_ref (singleton);
+}
+
+typedef struct WifiState WifiState;
+struct WifiState {
+	const char *desc;
+	gboolean enabled;
+};
+
+static gboolean
+rfkill_change_wifi_timeout (gpointer user_data)
+{
+	WifiState *state = (WifiState *) user_data;
+
+	rfkill_change_wifi (state->desc, state->enabled);
+
+	return G_SOURCE_REMOVE;
+}
+
+static void
+wifi_state_free (gpointer user_data)
+{
+	g_slice_free (WifiState, (WifiState *)user_data);
 }
 
 NMManager *
@@ -4396,11 +4528,31 @@ nm_manager_new (NMSettings *settings,
 	                  G_CALLBACK (bluez_manager_bdaddr_removed_cb),
 	                  singleton);
 
+#if WITH_URFKILL
+	priv->urfkill_mgr = nm_urfkill_manager_new ();
+
+	g_signal_connect (priv->urfkill_mgr,
+	                  "wlan-state-changed",
+	                  G_CALLBACK (urfkill_wlan_state_changed_cb),
+	                  singleton);
+	g_signal_connect (priv->urfkill_mgr,
+	                  "wwan-state-changed",
+	                  G_CALLBACK (urfkill_wwan_state_changed_cb),
+	                  singleton);
+#endif
+
 	/* Force kernel WiFi rfkill state to follow NM saved wifi state in case
 	 * the BIOS doesn't save rfkill state, and to be consistent with user
 	 * changes to the WirelessEnabled property which toggles kernel rfkill.
 	 */
-	rfkill_change_wifi (priv->radio_states[RFKILL_TYPE_WLAN].desc, initial_wifi_enabled);
+	WifiState *wifi_state = g_slice_new0 (WifiState);
+	wifi_state->desc = priv->radio_states[RFKILL_TYPE_WLAN].desc;
+	wifi_state->enabled = initial_wifi_enabled;
+
+	priv->wifi_initial_id = g_timeout_add_seconds_full (G_PRIORITY_DEFAULT, 10,
+	                                                    rfkill_change_wifi_timeout,
+	                                                    wifi_state,
+	                                                    wifi_state_free);
 
 	return singleton;
 }

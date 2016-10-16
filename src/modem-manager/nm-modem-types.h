@@ -21,6 +21,14 @@
 #ifndef NM_MODEM_TYPES_H
 #define NM_MODEM_TYPES_H
 
+#define OFONO_DBUS_SERVICE                      "org.ofono"
+#define OFONO_DBUS_PATH                         "/"
+#define OFONO_DBUS_INTERFACE                    "org.ofono.Manager"
+#define OFONO_DBUS_INTERFACE_MODEM              "org.ofono.Modem"
+#define OFONO_DBUS_INTERFACE_CONNECTION_MANAGER "org.ofono.ConnectionManager"
+#define OFONO_DBUS_INTERFACE_CONNECTION_CONTEXT "org.ofono.ConnectionContext"
+#define OFONO_DBUS_INTERFACE_SIM_MANAGER	"org.ofono.SimManager"
+
 #define MM_OLD_DBUS_SERVICE                     "org.freedesktop.ModemManager"
 #define MM_OLD_DBUS_PATH                        "/org/freedesktop/ModemManager"
 #define MM_OLD_DBUS_INTERFACE                   "org.freedesktop.ModemManager"

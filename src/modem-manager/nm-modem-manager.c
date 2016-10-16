@@ -17,7 +17,7 @@
  *
  * Copyright (C) 2009 - 2010 Red Hat, Inc.
  * Copyright (C) 2009 Novell, Inc.
- * Copyright (C) 2009 Canonical Ltd.
+ * Copyright (C) 2009 - 2013 Canonical Ltd.
  */
 
 #include <string.h>
@@ -27,6 +27,7 @@
 #include "nm-modem.h"
 #include "nm-modem-gsm.h"
 #include "nm-modem-cdma.h"
+#include "nm-modem-ofono.h"
 #include "nm-dbus-manager.h"
 #include "nm-modem-types.h"
 #include "nm-marshal.h"
@@ -38,6 +39,7 @@
 #endif
 
 #define MODEM_POKE_INTERVAL 120
+#define WITH_OFONO 1
 
 G_DEFINE_TYPE (NMModemManager, nm_modem_manager, G_TYPE_OBJECT)
 
@@ -169,8 +171,72 @@ get_modem_properties (DBusGConnection *connection,
 	return *data_device && *driver;
 }
 
+#if WITH_OFONO
 static void
-create_modem (NMModemManager *self, const char *path)
+ofono_create_modem (NMModemManager *self, const char *path)
+{
+	NMModem *modem = NULL;
+	DBusGProxy *proxy;
+	GError *err = NULL;
+	GValue value = { 0, };
+
+	proxy = dbus_g_proxy_new_for_name (nm_dbus_manager_get_connection (self->priv->dbus_mgr),
+	                                   OFONO_DBUS_SERVICE,
+	                                   path,
+	                                   OFONO_DBUS_INTERFACE_MODEM);
+
+	/* Create a simple TRUE gvalue boolean */
+	g_value_init (&value, G_TYPE_BOOLEAN);
+	g_value_set_boolean (&value, TRUE);
+
+	/* Mark the modem as powered */
+	if (!dbus_g_proxy_call_with_timeout (proxy, "SetProperty", 15000, &err,
+	                                     G_TYPE_STRING, "Powered",
+	                                     G_TYPE_VALUE, &value,
+	                                     G_TYPE_INVALID,
+	                                     G_TYPE_INVALID)) {
+		nm_log_warn (LOGD_MB, "could not mark modem as powered: %s %s",
+		             err ? dbus_g_error_get_name (err) : "(none)",
+		             err ? err->message : "(unknown)");
+		g_clear_error (&err);
+		/* Don't fail the creation here, some modems are weird. */
+	}
+
+	/* Mark the modem as online */
+	/*if (!dbus_g_proxy_call_with_timeout (proxy, "SetProperty", 15000, &err,
+	                                     G_TYPE_STRING, "Online",
+	                                     G_TYPE_VALUE, &value,
+	                                     G_TYPE_INVALID,
+	                                     G_TYPE_INVALID)) {
+		nm_log_warn (LOGD_MB, "could not mark modem as online: %s %s",
+		             err ? dbus_g_error_get_name (err) : "(none)",
+		             err ? err->message : "(unknown)");
+		g_clear_error (&err);
+		return;
+	}
+	*/
+
+	if (g_hash_table_lookup (self->priv->modems, path)) {
+		nm_log_warn (LOGD_MB, "modem with path %s already exists, ignoring", path);
+		return;
+	}
+
+	/* Create modem instance */
+	modem = nm_modem_ofono_new (path);
+
+	if (modem) {
+		g_object_set (G_OBJECT (modem), NM_MODEM_IP_TIMEOUT, 30, NULL);
+		g_hash_table_insert (self->priv->modems, g_strdup (path), modem);
+		g_signal_emit (self, signals[MODEM_ADDED], 0, modem, "ofono");
+	}
+	else {
+		nm_log_warn (LOGD_MB, "Invalid modem");
+	}
+}
+#endif
+
+static void
+mm_create_modem (NMModemManager *self, const char *path)
 {
 	NMModem *modem = NULL;
 	char *data_device = NULL, *driver = NULL, *master_device = NULL;
@@ -227,10 +293,19 @@ create_modem (NMModemManager *self, const char *path)
 	g_free (driver);
 }
 
+#if WITH_OFONO
 static void
-modem_added (DBusGProxy *proxy, const char *path, gpointer user_data)
+ofono_modem_added (DBusGProxy *proxy, const char *path, GHashTable *props, gpointer user_data)
 {
-	create_modem (NM_MODEM_MANAGER (user_data), path);
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
+	ofono_create_modem (NM_MODEM_MANAGER (user_data), path);
+}
+#endif
+
+static void
+mm_modem_added (DBusGProxy *proxy, const char *path, gpointer user_data)
+{
+	mm_create_modem (NM_MODEM_MANAGER (user_data), path);
 }
 
 static void
@@ -238,6 +313,8 @@ modem_removed (DBusGProxy *proxy, const char *path, gpointer user_data)
 {
 	NMModemManager *self = NM_MODEM_MANAGER (user_data);
 	NMModem *modem;
+
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 
 	modem = (NMModem *) g_hash_table_lookup (self->priv->modems, path);
 	if (modem) {
@@ -289,8 +366,45 @@ poke_modem_cb (gpointer user_data)
 	return TRUE;
 }
 
+#if WITH_OFONO
+#define OFONO_DBUS_MODEM_ENTRY (dbus_g_type_get_struct ("GValueArray", DBUS_TYPE_G_OBJECT_PATH, DBUS_TYPE_G_MAP_OF_VARIANT, G_TYPE_INVALID))
+#define OFONO_DBUS_MODEM_ENTRIES (dbus_g_type_get_collection ("GPtrArray", OFONO_DBUS_MODEM_ENTRY))
+
 static void
-enumerate_devices_done (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer data)
+ofono_enumerate_devices_done (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer data)
+{
+	NMModemManager *manager = NM_MODEM_MANAGER (data);
+	GPtrArray *modems;
+	GError *error = NULL;
+
+	if (!dbus_g_proxy_end_call (proxy, call_id, &error,
+								OFONO_DBUS_MODEM_ENTRIES, &modems,
+								G_TYPE_INVALID)) {
+		nm_log_warn (LOGD_MB, "could not get modem list: %s", error->message);
+		g_error_free (error);
+	} else {
+		int i;
+
+		for (i = 0; i < modems->len; i++) {
+			GValueArray *item = g_ptr_array_index (modems, i);
+			GValue *tmp;
+			const char *path;
+
+			tmp = g_value_array_get_nth (item, 0);
+			path = g_value_get_boxed (tmp);
+
+			ofono_create_modem (manager, path);
+
+			g_value_array_free (item);
+		}
+
+		g_ptr_array_free (modems, TRUE);
+	}
+}
+#endif
+
+static void
+mm_enumerate_devices_done (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer data)
 {
 	NMModemManager *manager = NM_MODEM_MANAGER (data);
 	GPtrArray *modems;
@@ -307,7 +421,7 @@ enumerate_devices_done (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer dat
 		for (i = 0; i < modems->len; i++) {
 			char *path = (char *) g_ptr_array_index (modems, i);
 
-			create_modem (manager, path);
+			mm_create_modem (manager, path);
 			g_free (path);
 		}
 
@@ -317,6 +431,39 @@ enumerate_devices_done (DBusGProxy *proxy, DBusGProxyCall *call_id, gpointer dat
 
 #if WITH_MODEM_MANAGER_1
 static void clear_modem_manager_1_support (NMModemManager *self);
+#endif
+
+#if WITH_OFONO
+static void
+ofono_appeared (NMModemManager *self, gboolean enumerate_devices)
+{
+	if (self->priv->poke_id) {
+		g_source_remove (self->priv->poke_id);
+		self->priv->poke_id = 0;
+	}
+
+	nm_log_info (LOGD_MB, "ofono is now available");
+
+	self->priv->proxy = dbus_g_proxy_new_for_name (nm_dbus_manager_get_connection (self->priv->dbus_mgr),
+	                                               OFONO_DBUS_SERVICE, OFONO_DBUS_PATH, OFONO_DBUS_INTERFACE);
+
+	dbus_g_object_register_marshaller (_nm_marshal_VOID__STRING_BOXED,
+	                                   G_TYPE_NONE,
+	                                   DBUS_TYPE_G_OBJECT_PATH, DBUS_TYPE_G_MAP_OF_VARIANT,
+	                                   G_TYPE_INVALID);
+	dbus_g_proxy_add_signal (self->priv->proxy, "ModemAdded", DBUS_TYPE_G_OBJECT_PATH, DBUS_TYPE_G_MAP_OF_VARIANT, G_TYPE_INVALID);
+	dbus_g_proxy_connect_signal (self->priv->proxy, "ModemAdded",
+								 G_CALLBACK (ofono_modem_added), self,
+								 NULL);
+
+	dbus_g_proxy_add_signal (self->priv->proxy, "ModemRemoved", DBUS_TYPE_G_OBJECT_PATH, G_TYPE_INVALID);
+	dbus_g_proxy_connect_signal (self->priv->proxy, "ModemRemoved",
+								 G_CALLBACK (modem_removed), self,
+								 NULL);
+
+	if (enumerate_devices)
+		dbus_g_proxy_begin_call (self->priv->proxy, "GetModems", ofono_enumerate_devices_done, self, NULL, G_TYPE_INVALID);
+}
 #endif
 
 static void
@@ -342,7 +489,7 @@ modem_manager_appeared (NMModemManager *self, gboolean enumerate_devices)
 
 	dbus_g_proxy_add_signal (self->priv->proxy, "DeviceAdded", DBUS_TYPE_G_OBJECT_PATH, G_TYPE_INVALID);
 	dbus_g_proxy_connect_signal (self->priv->proxy, "DeviceAdded",
-								 G_CALLBACK (modem_added), self,
+								 G_CALLBACK (mm_modem_added), self,
 								 NULL);
 
 	dbus_g_proxy_add_signal (self->priv->proxy, "DeviceRemoved", DBUS_TYPE_G_OBJECT_PATH, G_TYPE_INVALID);
@@ -351,7 +498,7 @@ modem_manager_appeared (NMModemManager *self, gboolean enumerate_devices)
 								 NULL);
 
 	if (enumerate_devices)
-		dbus_g_proxy_begin_call (self->priv->proxy, "EnumerateDevices", enumerate_devices_done, self, NULL, G_TYPE_INVALID);
+		dbus_g_proxy_begin_call (self->priv->proxy, "EnumerateDevices", mm_enumerate_devices_done, self, NULL, G_TYPE_INVALID);
 }
 
 static gboolean
@@ -360,6 +507,12 @@ remove_one_modem (gpointer key, gpointer value, gpointer user_data)
 	g_signal_emit (user_data, signals[MODEM_REMOVED], 0, value);
 
 	return TRUE;
+}
+
+static void
+ofono_disappeared (NMModemManager *self)
+{
+	nm_log_dbg (LOGD_MB, "in %s", __func__);
 }
 
 static void
@@ -379,7 +532,7 @@ modem_manager_disappeared (NMModemManager *self)
 }
 
 static void
-nm_modem_manager_name_owner_changed (NMDBusManager *dbus_mgr,
+nm_modem_name_owner_changed (NMDBusManager *dbus_mgr,
 									 const char *name,
 									 const char *old_owner,
 									 const char *new_owner,
@@ -388,19 +541,31 @@ nm_modem_manager_name_owner_changed (NMDBusManager *dbus_mgr,
 	gboolean old_owner_good;
 	gboolean new_owner_good;
 
-	/* Can't handle the signal if its not from the modem service */
-	if (strcmp (MM_OLD_DBUS_SERVICE, name) != 0)
-		return;
-
 	old_owner_good = (old_owner && strlen (old_owner));
 	new_owner_good = (new_owner && strlen (new_owner));
 
-	if (!old_owner_good && new_owner_good) {
-		modem_manager_appeared (NM_MODEM_MANAGER (user_data), FALSE);
-	} else if (old_owner_good && !new_owner_good) {
-		nm_log_info (LOGD_MB, "the modem manager disappeared");
-		modem_manager_disappeared (NM_MODEM_MANAGER (user_data));
+	/* Can't handle the signal if its not from the modem service */
+	if (strcmp (MM_OLD_DBUS_SERVICE, name) == 0) {
+		if (!old_owner_good && new_owner_good) {
+			modem_manager_appeared (NM_MODEM_MANAGER (user_data), FALSE);
+		} else if (old_owner_good && !new_owner_good) {
+			nm_log_info (LOGD_MB, "ModemManager disappeared");
+			modem_manager_disappeared (NM_MODEM_MANAGER (user_data));
+		}
 	}
+#if WITH_OFONO
+	else if (strcmp (OFONO_DBUS_SERVICE, name) == 0) {
+		if (!old_owner_good && new_owner_good) {
+			ofono_appeared (NM_MODEM_MANAGER (user_data), TRUE);
+		} else if (old_owner_good && !new_owner_good) {
+			nm_log_info (LOGD_MB, "ofono disappeared");
+			ofono_disappeared (NM_MODEM_MANAGER (user_data));
+		}
+	}
+#endif
+	else
+		return;
+
 }
 
 /************************************************************************/
@@ -769,15 +934,20 @@ nm_modem_manager_init (NMModemManager *self)
 
 	self->priv->modems = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_object_unref);
 
-	/* ModemManager < 0.7 */
 	self->priv->dbus_mgr = nm_dbus_manager_get ();
 	g_signal_connect (self->priv->dbus_mgr, NM_DBUS_MANAGER_NAME_OWNER_CHANGED,
-					  G_CALLBACK (nm_modem_manager_name_owner_changed),
+					  G_CALLBACK (nm_modem_name_owner_changed),
 					  self);
+
+	/* ModemManager < 0.7 */
 	if (nm_dbus_manager_name_has_owner (self->priv->dbus_mgr, MM_OLD_DBUS_SERVICE))
 		modem_manager_appeared (self, TRUE);
-	else
-		modem_manager_disappeared (self);
+
+#if WITH_OFONO
+	/* Ofono */
+	if (nm_dbus_manager_name_has_owner (self->priv->dbus_mgr, OFONO_DBUS_SERVICE))
+		ofono_appeared (self, TRUE);
+#endif
 
 #if WITH_MODEM_MANAGER_1
 	/* ModemManager >= 0.7 */

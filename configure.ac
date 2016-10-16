@@ -96,6 +96,7 @@ AC_ARG_ENABLE(ifcfg-rh, AS_HELP_STRING([--enable-ifcfg-rh], [enable ifcfg-rh con
 AC_ARG_ENABLE(ifcfg-suse, AS_HELP_STRING([--enable-ifcfg-suse], [enable ifcfg-suse configuration plugin (SUSE)]))
 AC_ARG_ENABLE(ifupdown, AS_HELP_STRING([--enable-ifupdown], [enable ifupdown configuration plugin (Debian/Ubuntu)]))
 AC_ARG_ENABLE(ifnet, AS_HELP_STRING([--enable-ifnet], [enable ifnet configuration plugin (Gentoo)]))
+AC_ARG_ENABLE(ofono, AS_HELP_STRING([--enable-ofono], [enable ifnet configuration plugin (Gentoo)]))
 # Default alternative plugins by distribution
 AS_IF([test -z "$enable_ifcfg_rh"], AC_CHECK_FILE(/etc/redhat-release, enable_ifcfg_rh=yes))
 AS_IF([test -z "$enable_ifcfg_rh"], AC_CHECK_FILE(/etc/fedora-release, enable_ifcfg_rh=yes))
@@ -108,11 +109,14 @@ AS_IF([test -z "$enable_ifcfg_rh"], enable_ifcfg_rh=no)
 AS_IF([test -z "$enable_ifcfg_suse"], enable_ifcfg_suse=no)
 AS_IF([test -z "$enable_ifupdown"], enable_ifupdown=no)
 AS_IF([test -z "$enable_ifnet"], enable_ifnet=no)
+# Ofono is always enabled.
+AS_IF([test -z "$enable_ofono"], enable_ofono=yes)
 # Create automake conditionals
 AM_CONDITIONAL(CONFIG_PLUGIN_IFCFG_RH, test "$enable_ifcfg_rh" = "yes")
 AM_CONDITIONAL(CONFIG_PLUGIN_IFCFG_SUSE, test "$enable_ifcfg_suse" = "yes")
 AM_CONDITIONAL(CONFIG_PLUGIN_IFUPDOWN, test "$enable_ifupdown" = "yes")
 AM_CONDITIONAL(CONFIG_PLUGIN_IFNET, test "$enable_ifnet" = "yes")
+AM_CONDITIONAL(CONFIG_PLUGIN_OFONO, test "$enable_ofono" = "yes")
 # Code coverage
 GNOME_CODE_COVERAGE
 
@@ -193,6 +197,17 @@ if test "$ac_have_vlan_flag_loose_binding" = yes; then
 else
 	AC_DEFINE(HAVE_VLAN_FLAG_LOOSE_BINDING, 0, [Define if you have VLAN_FLAG_LOOSE_BINDING])
 fi
+
+dnl
+dnl Default to using WEXT but allow it to be disabled
+dnl
+AC_ARG_WITH(urfkill, AS_HELP_STRING([--with-urfkill=yes], [Enable or disable support for urfkill]), ac_with_urfkill=$withval, ac_with_urfkill="yes")
+if test x"$ac_with_urfkill" = x"yes"; then
+	AC_DEFINE(WITH_URFKILL, 1, [Define if you want to build with support for the urfkill daemon])
+else
+	AC_DEFINE(WITH_URFKILL, 0, [Define if you want to build with support for the urfkill daemon])
+fi
+AM_CONDITIONAL(WITH_URFKILL, test x"${ac_with_urfkill}" = x"yes")
 
 dnl
 dnl Checks for libm - needed for pow()
@@ -671,6 +686,7 @@ src/settings/Makefile
 src/settings/plugins/Makefile
 src/settings/plugins/ifupdown/Makefile
 src/settings/plugins/ifupdown/tests/Makefile
+src/settings/plugins/ofono/Makefile
 src/settings/plugins/ifnet/Makefile
 src/settings/plugins/ifnet/tests/Makefile
 src/settings/plugins/ifcfg-rh/Makefile
@@ -773,6 +789,7 @@ echo "  ppp: $enable_ppp"
 echo "  modemmanager-1: $with_modem_manager_1"
 echo "  concheck: $enable_concheck"
 echo "  bluez 4: $enable_bluez4"
+echo "  urfkill: $ac_with_urfkill"
 echo
 
 echo "Configuration plugins"
@@ -780,6 +797,7 @@ echo "  ifcfg-rh: ${enable_ifcfg_rh}"
 echo "  ifcfg-suse: ${enable_ifcfg_suse}"
 echo "  ifupdown: ${enable_ifupdown}"
 echo "  ifnet: ${enable_ifnet}"
+echo "  ofono: ${enable_ofono}"
 echo
 
 echo "Handlers for /etc/resolv.conf:"

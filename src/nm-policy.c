@@ -1253,9 +1253,13 @@ reset_connections_retries (gpointer user_data)
 		if (con_stamp == 0)
 			continue;
 		if (con_stamp + RESET_RETRIES_TIMER <= now) {
-			set_connection_auto_retries (NM_CONNECTION (iter->data), RETRIES_DEFAULT);
-			g_object_set_data (G_OBJECT (iter->data), RESET_RETRIES_TIMESTAMP_TAG, GSIZE_TO_POINTER (0));
-			changed = TRUE;
+			NMDeviceStateReason reason = GPOINTER_TO_UINT (g_object_get_data (G_OBJECT (iter->data), FAILURE_REASON_TAG));
+
+			if (reason != NM_DEVICE_STATE_REASON_NO_SECRETS) {
+				set_connection_auto_retries (NM_CONNECTION (iter->data), RETRIES_DEFAULT);
+				g_object_set_data (G_OBJECT (iter->data), RESET_RETRIES_TIMESTAMP_TAG, GSIZE_TO_POINTER (0));
+				changed = TRUE;
+			}
 			continue;
 		}
 		if (con_stamp < min_stamp)

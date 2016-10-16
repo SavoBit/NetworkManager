@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdio.h>
 
+#include "NetworkManager.h"
 #include "nm-config.h"
 
 #define NM_DEFAULT_SYSTEM_CONF_FILE  NMCONFDIR "/NetworkManager.conf"
@@ -140,6 +141,8 @@ fill_from_file (NMConfig *config,
 {
 	GKeyFile *kf;
 	gboolean success = FALSE;
+	int value;
+	GError *err;
 
 	if (g_file_test (path, G_FILE_TEST_EXISTS) == FALSE) {
 		g_set_error (error, G_KEY_FILE_ERROR, G_KEY_FILE_ERROR_NOT_FOUND, "file %s not found", path);
@@ -183,8 +186,17 @@ fill_from_file (NMConfig *config,
 
 		if (cli_connectivity_interval >= 0)
 			config->connectivity_interval = cli_connectivity_interval;
-		else
-			config->connectivity_interval = g_key_file_get_integer (kf, "connectivity", "interval", NULL);
+		else {
+			value = g_key_file_get_integer (kf, "connectivity", "interval", &err);
+			if (!err)
+				config->connectivity_interval = value;
+			else {
+				/* Using a default value here, which isn't a problem if connectivity
+				 * isn't set up, as uri would be NULL.
+				 */
+				config->connectivity_interval = NM_CONNECTIVITY_DEFAULT_INTERVAL;
+			}
+		}
 
 		if (cli_connectivity_response && strlen (cli_connectivity_response))
 			config->connectivity_response = g_strdup (cli_connectivity_response);
