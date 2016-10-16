@@ -28,6 +28,16 @@ gboolean nm_netlink_find_address (int ifindex,
                                   void *addr,  /* struct in_addr or struct in6_addr */
                                   int prefix_);
 
+gboolean nm_netlink_find_ll_or_addresses (int ifindex,
+                         int family,
+						 guint8* hwaddr,
+						 guint hwaddr_len,
+						 gboolean want_ll,
+						 gboolean want_other);
+
+gboolean
+llv6_matches_hw_addr(struct in6_addr *addr, guint8 *hwaddr, guint hw_len);
+
 typedef enum {
 	NMNL_PROP_INVALID = 0,
 	NMNL_PROP_PROT,

@@ -697,7 +697,14 @@ check_addresses (NMIP6Device *device)
 			            rtnl_addr_get_prefixlen (rtnladdr));
 		}
 
+
 		if (IN6_IS_ADDR_LINKLOCAL (addr)) {
+			if (! llv6_matches_hw_addr(addr, device->hwaddr, device->hwaddr_len)) {
+				nm_log_info (LOGD_IP6, "(%s): ignoring link local address that doesn't match HW address: %s/%d",
+					    device->iface, buf,
+					    rtnl_addr_get_prefixlen (rtnladdr));
+				continue;
+			}
 			if (device->state == NM_IP6_DEVICE_UNCONFIGURED)
 				device_set_state (device, NM_IP6_DEVICE_GOT_LINK_LOCAL);
 			device->has_linklocal = TRUE;
