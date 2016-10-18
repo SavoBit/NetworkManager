@@ -71,6 +71,9 @@ find_one_address (struct nl_object *object, void *user_data)
 	}
 }
 
+/** callback function for nl_cache_foreach, used from
+ *  nm_netlink_find_ll_or_addresses.
+ */
 static void
 find_ll_or_other_addresses (struct nl_object *object, void *user_data)
 {
@@ -100,6 +103,12 @@ find_ll_or_other_addresses (struct nl_object *object, void *user_data)
 	}
 }
 
+/** Checks whether the given IPv6 address is a link local address matching
+ * the given given hw (MAC) address according to EUI-64.
+ *
+ * FIXME: this breaks with privacy extensions enabled (we don't have them
+ * in the controller.)
+ */
 gboolean
 llv6_matches_hw_addr(struct in6_addr *addr, guint8 *hwaddr, guint hw_len) {
 	if (hw_len != 6) {
@@ -172,6 +181,23 @@ nm_netlink_find_address (int ifindex,
 	return info.found;
 }
 
+/** Iterates over the netlink addresses of the given interface, and
+ *  checks whether LLv6 and/or other addresses are present.
+ *
+ *  LLv6 addresses are only accepted if they match the MAC according to
+ *  EUI-64.
+ *
+ *  @param family - address family to check
+ *  @param whether the interface should have a LLv6 address
+ *  @param whether the interface should have other addresses of the given family
+ *  @return true if the interface is configured according to both
+ *    want_ll and want_other.
+ *
+ * FIXME: this probably only works for family AF_INET6.
+ *
+ * FIXME: this breaks with privacy extensions enabled (we don't have them
+ * in the controller.)s
+ */
 gboolean
 nm_netlink_find_ll_or_addresses (int ifindex,
                          int family,
