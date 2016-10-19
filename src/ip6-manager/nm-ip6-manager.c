@@ -697,7 +697,26 @@ check_addresses (NMIP6Device *device)
 			            rtnl_addr_get_prefixlen (rtnladdr));
 		}
 
+
 		if (IN6_IS_ADDR_LINKLOCAL (addr)) {
+			/* BSC-9653 - don't accept LLv6 addresses that are not a proper translation of the MAC.
+			 *
+			 * NetworkManager goes through an intermittent stage where it assigns a random MAC address to the
+			 * bond (I do not exactly know why and how that happens). If this method accepts the MAC, it
+			 * becomes permant, unless the user forces a re-initialization of the connection using "nmcli conn up"
+			 *
+			 * This patch makes nm-ip6-manager reject the LLv6 address, which leads to it looping and eventually
+			 * grabbing the right address.
+			 *
+			 * FIXME: this seems to take longer than it should. It might be better to ensure that the bond
+			 * interface is created with the correct LLv6 in the first place.
+s			 */
+			if (! llv6_matches_hw_addr(addr, device->hwaddr, device->hwaddr_len)) {
+				nm_log_info (LOGD_IP6, "(%s): ignoring link local address that doesn't match HW address: %s/%d",
+					    device->iface, buf,
+					    rtnl_addr_get_prefixlen (rtnladdr));
+				continue;
+			}
 			if (device->state == NM_IP6_DEVICE_UNCONFIGURED)
 				device_set_state (device, NM_IP6_DEVICE_GOT_LINK_LOCAL);
 			device->has_linklocal = TRUE;

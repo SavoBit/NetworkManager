@@ -33,7 +33,11 @@ typedef struct {
 	void *addr;
 	int addrlen;
 	int prefix;
+	guint8* hwaddr;
+	guint hwaddr_len;
 	gboolean found;
+	gboolean found_ll;
+	gboolean found_other;
 } FindAddrInfo;
 
 static void
@@ -64,6 +68,64 @@ find_one_address (struct nl_object *object, void *user_data)
 	if (binaddr) {
 		if (memcmp (binaddr, info->addr, info->addrlen) == 0)
 			info->found = TRUE; /* Yay, found it */
+	}
+}
+
+/** callback function for nl_cache_foreach, used from
+ *  nm_netlink_find_ll_or_addresses.
+ */
+static void
+find_ll_or_other_addresses (struct nl_object *object, void *user_data)
+{
+	FindAddrInfo *info = user_data;
+	struct rtnl_addr *addr = (struct rtnl_addr *) object;
+	struct nl_addr *local;
+	void *binaddr;
+
+	if (rtnl_addr_get_ifindex (addr) != info->ifindex)
+		return;
+	if (rtnl_addr_get_family (addr) != info->family)
+		return;
+
+	local = rtnl_addr_get_local (addr);
+	if (nl_addr_get_family (local) != info->family)
+		return;
+	if (nl_addr_get_len (local) != info->addrlen)
+		return;
+
+	if (info->family == AF_INET6 && IN6_IS_ADDR_LINKLOCAL (addr)) {
+		if (llv6_matches_hw_addr(addr, info->hwaddr, info->hwaddr_len)) {
+			info->found_ll = TRUE;
+		}
+	} else {
+		info->found_other = TRUE;
+	}
+}
+
+/** Checks whether the given IPv6 address is a link local address matching
+ * the given given hw (MAC) address according to EUI-64.
+ *
+ * FIXME: this breaks with privacy extensions enabled (we don't have them
+ * in the controller.)
+ */
+gboolean
+llv6_matches_hw_addr(struct in6_addr *addr, guint8 *hwaddr, guint hw_len) {
+	if (hw_len != 6) {
+		// can't check for non mac addresses
+		return TRUE;
+	}
+	unsigned char *a = addr->s6_addr;
+	if ( (a[8] == hwaddr[0] ^ 2) &&
+	     (a[9] == hwaddr[1]) &&
+	     (a[10] == hwaddr[2]) &&
+	     (a[11] == 0xff ) &&
+	     (a[12] == 0xfe ) &&
+	     (a[13] == hwaddr[3]) &&
+	     (a[14] == hwaddr[4]) &&
+	     (a[15] == hwaddr[5])) {
+		return TRUE;
+	} else {
+		return FALSE;
 	}
 }
 
@@ -116,6 +178,62 @@ nm_netlink_find_address (int ifindex,
 		}
 	}
 	return info.found;
+}
+
+/** Iterates over the netlink addresses of the given interface, and
+ *  checks whether LLv6 and/or other addresses are present.
+ *
+ *  LLv6 addresses are only accepted if they match the MAC according to
+ *  EUI-64.
+ *
+ *  @param family - address family to check
+ *  @param whether the interface should have a LLv6 address
+ *  @param whether the interface should have other addresses of the given family
+ *  @return true if the interface is configured according to both
+ *    want_ll and want_other.
+ *
+ * FIXME: this probably only works for family AF_INET6.
+ *
+ * FIXME: this breaks with privacy extensions enabled (we don't have them
+ * in the controller.)s
+ */
+gboolean
+nm_netlink_find_ll_or_addresses (int ifindex,
+		int family,
+		guint8* hwaddr,
+		guint hwaddr_len,
+		gboolean want_ll,
+		gboolean want_other)
+{
+	struct nl_sock *nlh = NULL;
+	struct nl_cache *cache = NULL;
+	FindAddrInfo info;
+
+	g_return_val_if_fail (ifindex > 0, FALSE);
+	g_return_val_if_fail (family == AF_INET || family == AF_INET6, FALSE);
+
+	memset (&info, 0, sizeof (info));
+	info.ifindex = ifindex;
+	info.family = family;
+	info.hwaddr = hwaddr;
+	info.hwaddr_len = hwaddr_len;
+	if (family == AF_INET)
+		info.addrlen = sizeof (struct in_addr);
+	else if (family == AF_INET6)
+		info.addrlen = sizeof (struct in6_addr);
+	else
+		g_assert_not_reached ();
+
+	nlh = nm_netlink_get_default_handle ();
+	if (nlh) {
+		rtnl_addr_alloc_cache(nlh, &cache);
+		if (cache) {
+			nl_cache_mngt_provide (cache);
+			nl_cache_foreach (cache, find_ll_or_other_addresses, &info);
+			nl_cache_free (cache);
+		}
+	}
+	return info.found_ll == want_ll && info.found_other == want_other;
 }
 
 struct rtnl_route *

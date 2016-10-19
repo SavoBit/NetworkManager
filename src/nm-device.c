@@ -5432,13 +5432,92 @@ ip4_match_config (NMDevice *self, NMConnection *connection)
 	return TRUE;
 }
 
+/** checks whether the IPv6 stack on the device is configured according to the
+ * configuration of the given connection. In this case, NM just 'resumes' the
+ * connection and does not fully configure the device.
+ *
+ * This feature is intended to enable 'smooth' restarts of NM without taking down/reinitializing
+ * all managed interfaces. It's also poorly designed.
+ *
+ * Upstream NM 0.9.8.8 did not check the IPv6 configuration at all. This meant that an interface
+ * that _only_ had IPv6 config would _never_ be initialized, because NM would always find a
+ * 'good enough' existing configuration.s
+ *
+ * FIXME: probably not a general solution, but good enough to ensure that when we initialize
+ * the bond devices on boot when they have only LLv6 config.s
+ */
+static gboolean
+ip6_match_config (NMDevice *self, NMConnection *connection)
+{
+	NMSettingIP6Config *s_ip6;
+	const char *method;
+	const guint8 *hwaddr;
+	int hwaddr_len;
+	int num, i;
+
+	s_ip6 = nm_connection_get_setting_ip6_config (connection);
+
+	method = s_ip6 ? nm_setting_ip6_config_get_method (s_ip6) : NM_SETTING_IP6_CONFIG_METHOD_AUTO;
+	hwaddr = nm_device_get_hw_address (self, &hwaddr_len);
+	g_warn_if_fail (hwaddr != NULL);
+
+	if (!strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_LINK_LOCAL)) {
+		nm_log_dbg (LOGD_DEVICE,
+				     "ip6_match_device (%s) mode link local - do not match config",
+				     nm_device_get_iface (self));
+
+		return nm_netlink_find_ll_or_addresses(nm_device_get_ip_ifindex (self),
+				AF_INET6,
+				hwaddr,
+				hwaddr_len,
+				/* want_ll = */ TRUE,
+				/* want_other = */ FALSE);
+	} else if (!strcmp (method, NM_SETTING_IP6_CONFIG_METHOD_AUTO)) {
+		return nm_netlink_find_ll_or_addresses(nm_device_get_ip_ifindex (self),
+				AF_INET6,
+				hwaddr,
+				hwaddr_len,
+				/* want_ll = */ TRUE,
+				/* want_other = */ TRUE);
+	} else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_DISABLED)) {
+			// FIXME: Enforce no ipv6 addresses?
+			return TRUE;
+	} else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_SHARED)) {
+		/* 'shared' isn't supported methods because 'shared'
+		 * requires too much iptables and dnsmasq state to be reclaimed, and
+		 * avahi-autoipd isn't smart enough to allow the link-local address to be
+		 * determined at any point other than when it was first assigned.
+		 */
+		return FALSE;
+	} else if (!strcmp (method, NM_SETTING_IP4_CONFIG_METHOD_MANUAL)) {
+		if (s_ip6) {
+			// see if all the configured IPv6 addresses are present on the device
+			num = nm_setting_ip6_config_get_num_addresses (s_ip6);
+			for (i = 0; i < num; i++) {
+				NMIP6Address *addr = nm_setting_ip6_config_get_address (s_ip6, i);
+				struct in_addr tmp = { .s_addr = nm_ip6_address_get_address (addr) };
+
+				if (!nm_netlink_find_address (nm_device_get_ip_ifindex (self),
+							      AF_INET6,
+							      &tmp,
+							      nm_ip6_address_get_prefix (addr)))
+					return FALSE;
+			}
+		}
+		return TRUE;
+	} else {
+		g_assert_not_reached();
+		return FALSE;
+	}
+}
+
 gboolean
 nm_device_match_ip_config (NMDevice *device, NMConnection *connection)
 {
 	if (!ip4_match_config (device, connection))
 		return FALSE;
-
-	/* FIXME: match IPv6 config */
+	if (!ip6_match_config (device, connection))
+		return FALSE;
 
 	return TRUE;
 }
