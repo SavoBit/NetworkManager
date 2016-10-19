@@ -46,11 +46,11 @@ gboolean nm_netlink_find_address (int ifindex,
  * in the controller.)s
  */
 gboolean nm_netlink_find_ll_or_addresses (int ifindex,
-                         int family,
-						 guint8* hwaddr,
-						 guint hwaddr_len,
-						 gboolean want_ll,
-						 gboolean want_other);
+		int family,
+		guint8* hwaddr,
+		guint hwaddr_len,
+		gboolean want_ll,
+		gboolean want_other);
 
 /** Checks whether the given IPv6 address is a link local address matching
  * the given given hw (MAC) address according to EUI-64.

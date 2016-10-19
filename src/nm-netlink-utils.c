@@ -92,7 +92,6 @@ find_ll_or_other_addresses (struct nl_object *object, void *user_data)
 		return;
 	if (nl_addr_get_len (local) != info->addrlen)
 		return;
-	binaddr = nl_addr_get_binary_addr (local);
 
 	if (info->family == AF_INET6 && IN6_IS_ADDR_LINKLOCAL (addr)) {
 		if (llv6_matches_hw_addr(addr, info->hwaddr, info->hwaddr_len)) {
@@ -200,11 +199,11 @@ nm_netlink_find_address (int ifindex,
  */
 gboolean
 nm_netlink_find_ll_or_addresses (int ifindex,
-                         int family,
-						 guint8* hwaddr,
-						 guint hwaddr_len,
-						 gboolean want_ll,
-						 gboolean want_other)
+		int family,
+		guint8* hwaddr,
+		guint hwaddr_len,
+		gboolean want_ll,
+		gboolean want_other)
 {
 	struct nl_sock *nlh = NULL;
 	struct nl_cache *cache = NULL;
